@@ -7,10 +7,12 @@ export default defineConfig({
   plugins: [
     peggyPlugin(),
     (monacoEditorPlugin.default || monacoEditorPlugin)({
-      languageWorkers: ['editorWorkerService'],
+      languageWorkers: ['editorWorkerService', 'json'],
     }),
   ],
+  base: '/luau/playground/',
   build: {
     outDir: '../../docs/playground',
+    emptyOutDir: true,
   },
 });

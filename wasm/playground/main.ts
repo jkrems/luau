@@ -1,6 +1,7 @@
 import * as monaco from "monaco-editor";
 
 import * as LuauParser from "../src/luau.pegjs";
+import { language as watLang, conf as watConf } from "./wat.monarch";
 
 async function loadMonaco() {}
 
@@ -335,7 +336,15 @@ function createEditor(
   });
 }
 
+function registerLanguages() {
+  monaco.languages.register({ id: "wat" });
+  monaco.languages.setLanguageConfiguration("wat", watConf);
+  monaco.languages.setMonarchTokensProvider("wat", watLang);
+}
+
 function main(wabt: Wabt) {
+  registerLanguages();
+
   const lastSource = window.localStorage.getItem("lastSource") ?? "print(2);\n";
 
   const srcEditor = createEditor("src", "lua", lastSource);
