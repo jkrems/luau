@@ -6,6 +6,11 @@ import peggyPlugin from '../tools/vite-plugin-peggy.js';
 export default defineConfig({
   plugins: [
     peggyPlugin(),
-    (monacoEditorPlugin.default || monacoEditorPlugin)({}),
+    (monacoEditorPlugin.default || monacoEditorPlugin)({
+      languageWorkers: ['editorWorkerService'],
+    }),
   ],
+  build: {
+    outDir: '../../docs/playground',
+  },
 });
