@@ -1,0 +1,27 @@
+{
+  "name": "luau2wasm",
+  "version": "0.0.0",
+  "description": "Experimental luau to Wasm compiler",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "playground": "vite ./playground",
+    "test": "vitest"
+  },
+  "keywords": [
+    "luau",
+    "lua",
+    "wasm"
+  ],
+  "author": "Jan Martin <jan.krems@gmail.com>",
+  "license": "MIT",
+  "devDependencies": {
+    "monaco-editor": "^0.48.0",
+    "vite": "^5.2.11",
+    "vite-plugin-monaco-editor": "^1.1.0",
+    "vitest": "^1.6.0"
+  },
+  "dependencies": {
+    "peggy": "^4.0.2"
+  }
+}
