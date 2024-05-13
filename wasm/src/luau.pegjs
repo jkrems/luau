@@ -21,7 +21,7 @@ Chunk
 Block = Chunk
 
 Stat
-  = expr:FunctionCall !(__ "=") { return {type: 'CallStmt', expr}; }
+  = expr:FunctionCall !(__ "=") { return {type: 'CallStmt', expr, loc: location()}; }
   / vars:VarList __ "=" __ exprs:ExpList {
       return {type: 'VarDecl', local: false, vars, exprs, loc: location()};
     }
@@ -116,13 +116,13 @@ Exp
 SimpleExp
   = "nil"
   / value:("false" / "true") {
-    return {type: 'Boolean', value: value === 'true', loc: location()};
+    return {type: 'BooleanLiteral', value: value === 'true', loc: location()};
   }
   / value:Number {
-    return {type: 'Number', value, loc: location()};
+    return {type: 'NumberLiteral', value, loc: location()};
   }
   / value:String {
-    return {type: 'String', value, loc: location()};
+    return {type: 'StringLiteral', value, loc: location()};
   }
   / "..." { return {type: 'Rest', loc: location()}; }
   / Function
@@ -163,7 +163,13 @@ CallOrRead
   / PropertyRead
 
 PropertyAccessStart
-  = name:NAME { return {type: 'Identifier', name, loc: location()}; }
+  = name:NAME {
+    return {
+      type: 'Identifier',
+      name,
+      loc: location(),
+    };
+  }
   / "(" expr:Exp ")" { return expr; }
 
 FunctionCall
@@ -175,7 +181,10 @@ FunctionCall
             object: n,
             key: prop.key,
             computed: prop.computed,
-            loc: location(),
+            loc: {
+              start: n.loc.start,
+              end: prop.loc.end,
+            },
           };
         }, start);
       }
@@ -195,8 +204,8 @@ FunctionCall
           method: call.method,
           args: call.args,
           loc: {
-            start: callee.start,
-            end: call.end,
+            start: callee.loc.start,
+            end: call.loc.end,
           },
         };
         callee = node;

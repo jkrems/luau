@@ -1,26 +1,7 @@
 import * as monaco from "monaco-editor";
 
-import * as LuauParser from "../src/luau.pegjs";
+import { LuauSyntaxError, isLuauSyntaxError, parse } from "../src/parse";
 import { language as watLang, conf as watConf } from "./wat.monarch";
-
-async function loadMonaco() {}
-
-interface CodeLocation {
-  offset: number;
-  line: number;
-  column: number;
-}
-
-interface PegSyntaxError extends Error {
-  location: {
-    start: CodeLocation;
-    end: CodeLocation;
-  };
-}
-
-function isSyntaxError(e: unknown): e is PegSyntaxError {
-  return e instanceof LuauParser.SyntaxError;
-}
 
 function toWat(ast: any): string {
   const types: string[] = [];
@@ -80,7 +61,7 @@ function toWat(ast: any): string {
   }
 
   function nodeErr(node: any, msg: string) {
-    return new LuauParser.SyntaxError(msg, "", node.loc);
+    return new LuauSyntaxError(msg, "", node.loc);
   }
 
   function visit(node: any): unknown {
@@ -287,7 +268,7 @@ ${body}
         return null;
       }
 
-      case "Number": {
+      case "NumberLiteral": {
         instructions.push(`f64.const ${node.value}`);
         return null;
       }
@@ -364,11 +345,11 @@ function main(wabt: Wabt) {
 
     let ast;
     try {
-      ast = LuauParser.parse(code);
+      ast = parse(code);
       astEditor.setValue(JSON.stringify(ast, null, 2));
       monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", []);
     } catch (e) {
-      if (isSyntaxError(e)) {
+      if (isLuauSyntaxError(e)) {
         monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
           {
             message: `${e.message}`,
@@ -395,7 +376,7 @@ function main(wabt: Wabt) {
     } catch (e) {
       console.error(e);
       watEditor.setValue(`${e}`);
-      if (isSyntaxError(e)) {
+      if (isLuauSyntaxError(e)) {
         monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
           {
             message: `${e.message}`,
@@ -454,7 +435,7 @@ const documentIsReady = /^loaded|^i|^c/.test(document.readyState)
 
 declare var WabtModule: () => Promise<Wabt>;
 
-Promise.all([WabtModule(), documentIsReady, loadMonaco()]).then(
+Promise.all([WabtModule(), documentIsReady]).then(
   (args: [Wabt, ...unknown[]]) => {
     main(args[0]);
   }
