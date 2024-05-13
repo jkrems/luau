@@ -39,6 +39,7 @@ if(LUAU_BUILD_CLI)
     add_executable(Luau.Reduce.CLI)
     add_executable(Luau.Compile.CLI)
     add_executable(Luau.Bytecode.CLI)
+    add_executable(Luau.ToWasm.CLI)
 
     # This also adds target `name` on Linux/macOS and `name.exe` on Windows
     set_target_properties(Luau.Repl.CLI PROPERTIES OUTPUT_NAME luau)
@@ -47,6 +48,7 @@ if(LUAU_BUILD_CLI)
     set_target_properties(Luau.Reduce.CLI PROPERTIES OUTPUT_NAME luau-reduce)
     set_target_properties(Luau.Compile.CLI PROPERTIES OUTPUT_NAME luau-compile)
     set_target_properties(Luau.Bytecode.CLI PROPERTIES OUTPUT_NAME luau-bytecode)
+    set_target_properties(Luau.ToWasm.CLI PROPERTIES OUTPUT_NAME luau-to-wasm)
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -201,6 +203,7 @@ if(LUAU_BUILD_CLI)
     target_compile_options(Luau.Ast.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Compile.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Bytecode.CLI PRIVATE ${LUAU_OPTIONS})
+    target_compile_options(Luau.ToWasm.CLI PRIVATE ${LUAU_OPTIONS})
 
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
@@ -220,6 +223,9 @@ if(LUAU_BUILD_CLI)
     target_link_libraries(Luau.Compile.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen Luau.CLI.lib)
 
     target_link_libraries(Luau.Bytecode.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen Luau.CLI.lib)
+
+    target_link_libraries(Luau.ToWasm.CLI PRIVATE osthreads)
+    target_link_libraries(Luau.ToWasm.CLI PRIVATE Luau.Analysis Luau.CLI.lib)
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -269,7 +275,7 @@ foreach(LIB Luau.Ast Luau.Compiler Luau.Config Luau.Analysis Luau.CodeGen Luau.V
         if(LIB MATCHES "CodeGen|VM" AND DEPENDS MATCHES "Ast|Analysis|Config|Compiler")
             message(FATAL_ERROR ${LIB} " is a runtime component but it depends on one of the offline components")
         endif()
-        if(LIB MATCHES "Ast|Analysis|Compiler" AND DEPENDS MATCHES "CodeGen|VM")
+        if(LIB MATCHES "Ast|Analysis|Compiler|Wasm" AND DEPENDS MATCHES "CodeGen|VM")
             message(FATAL_ERROR ${LIB} " is an offline component but it depends on one of the runtime components")
         endif()
         if(LIB MATCHES "Ast|Compiler" AND DEPENDS MATCHES "Analysis|Config")

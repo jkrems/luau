@@ -58,6 +58,10 @@ BYTECODE_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Bytecode.cpp
 BYTECODE_CLI_OBJECTS=$(BYTECODE_CLI_SOURCES:%=$(BUILD)/%.o)
 BYTECODE_CLI_TARGET=$(BUILD)/luau-bytecode
 
+TO_WASM_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/ToWasm.cpp
+TO_WASM_CLI_OBJECTS=$(TO_WASM_CLI_SOURCES:%=$(BUILD)/%.o)
+TO_WASM_CLI_TARGET=$(BUILD)/luau-to-wasm
+
 FUZZ_SOURCES=$(wildcard fuzz/*.cpp) fuzz/luau.pb.cpp
 FUZZ_OBJECTS=$(FUZZ_SOURCES:%=$(BUILD)/%.o)
 
@@ -69,8 +73,8 @@ ifneq ($(opt),)
 	TESTS_ARGS+=-O$(opt)
 endif
 
-OBJECTS=$(AST_OBJECTS) $(COMPILER_OBJECTS) $(CONFIG_OBJECTS) $(ANALYSIS_OBJECTS) $(CODEGEN_OBJECTS) $(VM_OBJECTS) $(ISOCLINE_OBJECTS) $(TESTS_OBJECTS) $(REPL_CLI_OBJECTS) $(ANALYZE_CLI_OBJECTS) $(COMPILE_CLI_OBJECTS) $(BYTECODE_CLI_OBJECTS) $(FUZZ_OBJECTS)
-EXECUTABLE_ALIASES = luau luau-analyze luau-compile luau-bytecode luau-tests
+OBJECTS=$(AST_OBJECTS) $(COMPILER_OBJECTS) $(CONFIG_OBJECTS) $(ANALYSIS_OBJECTS) $(CODEGEN_OBJECTS) $(VM_OBJECTS) $(ISOCLINE_OBJECTS) $(TESTS_OBJECTS) $(REPL_CLI_OBJECTS) $(ANALYZE_CLI_OBJECTS) $(COMPILE_CLI_OBJECTS) $(BYTECODE_CLI_OBJECTS)$(TO_WASM_CLI_OBJECTS) $(FUZZ_OBJECTS)
+EXECUTABLE_ALIASES = luau luau-analyze luau-compile luau-bytecode luau-to-wasm luau-tests
 
 # common flags
 CXXFLAGS=-g -Wall
@@ -147,11 +151,13 @@ $(REPL_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompi
 $(ANALYZE_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -IAnalysis/include -IConfig/include -Iextern
 $(COMPILE_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IVM/include -ICodeGen/include
 $(BYTECODE_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IVM/include -ICodeGen/include
+$(TO_WASM_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -IAnalysis/include -IConfig/include -Iextern
 $(FUZZ_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IAnalysis/include -IVM/include -ICodeGen/include -IConfig/include
 
 $(TESTS_TARGET): LDFLAGS+=-lpthread
 $(REPL_CLI_TARGET): LDFLAGS+=-lpthread
 $(ANALYZE_CLI_TARGET): LDFLAGS+=-lpthread
+$(TO_WASM_CLI_TARGET): LDFLAGS+=-lpthread
 fuzz-proto fuzz-prototest: LDFLAGS+=build/libprotobuf-mutator/src/libfuzzer/libprotobuf-mutator-libfuzzer.a build/libprotobuf-mutator/src/libprotobuf-mutator.a $(LPROTOBUF)
 
 # pseudo targets
@@ -214,6 +220,9 @@ luau-compile: $(COMPILE_CLI_TARGET)
 luau-bytecode: $(BYTECODE_CLI_TARGET)
 	ln -fs $^ $@
 
+luau-to-wasm: $(TO_WASM_CLI_TARGET)
+	ln -fs $^ $@
+
 luau-tests: $(TESTS_TARGET)
 	ln -fs $^ $@
 
@@ -223,8 +232,9 @@ $(REPL_CLI_TARGET): $(REPL_CLI_OBJECTS) $(COMPILER_TARGET) $(CONFIG_TARGET) $(AS
 $(ANALYZE_CLI_TARGET): $(ANALYZE_CLI_OBJECTS) $(ANALYSIS_TARGET) $(AST_TARGET) $(CONFIG_TARGET)
 $(COMPILE_CLI_TARGET): $(COMPILE_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
 $(BYTECODE_CLI_TARGET): $(BYTECODE_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
+$(TO_WASM_CLI_TARGET): $(TO_WASM_CLI_OBJECTS) $(ANALYSIS_TARGET) $(AST_TARGET) $(CONFIG_TARGET)
 
-$(TESTS_TARGET) $(REPL_CLI_TARGET) $(ANALYZE_CLI_TARGET) $(COMPILE_CLI_TARGET) $(BYTECODE_CLI_TARGET):
+$(TESTS_TARGET) $(REPL_CLI_TARGET) $(ANALYZE_CLI_TARGET) $(COMPILE_CLI_TARGET) $(BYTECODE_CLI_TARGET) $(TO_WASM_CLI_TARGET):
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 # executable targets for fuzzing

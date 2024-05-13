@@ -544,3 +544,9 @@ if(TARGET Luau.Bytecode.CLI)
     target_sources(Luau.Bytecode.CLI PRIVATE
         CLI/Bytecode.cpp)
 endif()
+
+if(TARGET Luau.ToWasm.CLI)
+    # Luau.Analyze.CLI Sources
+    target_sources(Luau.ToWasm.CLI PRIVATE
+        CLI/ToWasm.cpp)
+endif()
