@@ -11,8 +11,21 @@
 namespace Luau
 {
 
-std::string compileToWat(Frontend& frontend, const std::string& filename, const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
+enum WasmOutputFormat
+{
+    WASM,
+    WAT,
+};
 
-std::string compileToWat(const std::string& source, const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
+struct WasmCompileOptions
+{
+    WasmOutputFormat format = WasmOutputFormat::WASM;
+};
+
+std::string compileToWat(Frontend& frontend, const std::string& filename, const WasmCompileOptions& wasmOptions = {},
+    const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
+
+std::string compileToWat(
+    const std::string& source, const WasmCompileOptions& wasmOptions = {}, const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
 
 } // namespace Luau

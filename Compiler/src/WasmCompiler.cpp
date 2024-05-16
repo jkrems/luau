@@ -3,6 +3,7 @@
 #include <format>
 #include <sstream>
 
+#include <wasm-binary.h>
 #include <wasm-builder.h>
 #include <wasm.h>
 
@@ -631,7 +632,8 @@ void compileToWasmOrThrow(wasm::Module& wasm, SourceModule* sourceModule, Module
     compiler.compile(*sourceModule->names, root);
 }
 
-std::string compileToWat(Frontend& frontend, const std::string& moduleName, const CompileOptions& options, const ParseOptions& parseOptions)
+std::string compileToWat(Frontend& frontend, const std::string& moduleName, const WasmCompileOptions& wasmOptions, const CompileOptions& options,
+    const ParseOptions& parseOptions)
 {
     // Force some necessary options.
     frontend.options.retainFullTypeGraphs = true;
@@ -658,9 +660,22 @@ std::string compileToWat(Frontend& frontend, const std::string& moduleName, cons
         wasm::Module wasm;
         compileToWasmOrThrow(wasm, sourceModule, checkedModule, options);
 
-        std::ostringstream ss;
-        ss << wasm;
-        return ss.str();
+        if (wasmOptions.format == WasmOutputFormat::WAT)
+        {
+            std::ostringstream ss;
+            ss << wasm;
+            return ss.str();
+        }
+        else
+        {
+            wasm::BufferWithRandomAccess buffer;
+            wasm::WasmBinaryWriter writer(&wasm, buffer);
+            writer.setNamesSection(true);
+            writer.setEmitModuleName(true);
+            writer.write();
+
+            return std::string(buffer.begin(), buffer.end());
+        }
     }
     catch (CompileError& e)
     {
@@ -684,7 +699,8 @@ struct StaticStringFileResolver : FileResolver
     }
 };
 
-std::string compileToWat(const std::string& source, const CompileOptions& options, const ParseOptions& parseOptions)
+std::string compileToWat(
+    const std::string& source, const WasmCompileOptions& wasmOptions, const CompileOptions& options, const ParseOptions& parseOptions)
 {
     StaticStringFileResolver fileResolver(source);
     NullConfigResolver configResolver;
@@ -694,7 +710,7 @@ std::string compileToWat(const std::string& source, const CompileOptions& option
 
     std::string moduleName = "";
 
-    return compileToWat(frontend, moduleName, options, parseOptions);
+    return compileToWat(frontend, moduleName, wasmOptions, options, parseOptions);
 }
 
 } // namespace Luau

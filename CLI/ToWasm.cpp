@@ -1,6 +1,7 @@
 #include <stdio.h>
 
 #include <functional>
+#include <iostream>
 #include <queue>
 #include <string>
 #include <thread>
@@ -17,15 +18,9 @@ static void displayHelp(const char* argv0)
 {
     printf("Usage: %s [--mode] [options] [file list]\n", argv0);
     printf("\n");
-    printf("Available modes:\n");
-    printf("  omitted: typecheck and lint input files\n");
-    printf("  --annotate: typecheck input files and output source with type annotations\n");
     printf("\n");
     printf("Available options:\n");
-    printf("  --formatter=plain: report analysis errors in Luacheck-compatible format\n");
-    printf("  --formatter=gnu: report analysis errors in GNU-compatible format\n");
-    printf("  --mode=strict: default to strict mode when typechecking\n");
-    printf("  --timetrace: record compiler time tracing information into trace.json\n");
+    printf("  --format=wat: Generate wat instead of wasm\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -144,12 +139,23 @@ int main(int argc, char** argv)
     CliConfigResolver configResolver(Luau::Mode::Strict);
     Luau::Frontend frontend(&fileResolver, &configResolver, {});
 
+    Luau::WasmCompileOptions wasmOptions;
+
+    for (int i = 1; i < argc; ++i)
+    {
+        if (argv[i][0] != '-')
+            continue;
+
+        if (strcmp(argv[i], "--format=wat") == 0)
+            wasmOptions.format = Luau::WasmOutputFormat::WAT;
+    }
+
     std::vector<std::string> files = getSourceFiles(argc, argv);
 
     for (const std::string& path : files)
     {
-        std::string wat = Luau::compileToWat(frontend, path);
-        printf("%s", wat.c_str());
+        std::string wat = Luau::compileToWat(frontend, path, wasmOptions);
+        std::cout << wat;
     }
 
     return 0;
