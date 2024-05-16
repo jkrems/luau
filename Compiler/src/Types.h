@@ -10,6 +10,8 @@
 
 namespace Luau
 {
+namespace Compile
+{
 
 struct BuiltinTypes
 {
@@ -29,4 +31,5 @@ void buildTypeMap(DenseHashMap<AstExprFunction*, std::string>& functionTypes, De
     DenseHashMap<AstExpr*, LuauBytecodeType>& exprTypes, AstNode* root, const char* vectorType, const BuiltinTypes& builtinTypes,
     const DenseHashMap<AstExprCall*, int>& builtinCalls, const DenseHashMap<AstName, Compile::Global>& globals);
 
+} // namespace Compile
 } // namespace Luau

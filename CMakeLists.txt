@@ -26,11 +26,20 @@ add_library(Luau.Common INTERFACE)
 add_library(Luau.CLI.lib STATIC)
 add_library(Luau.Ast STATIC)
 add_library(Luau.Compiler STATIC)
+add_library(Luau.WasmCompiler STATIC)
 add_library(Luau.Config STATIC)
 add_library(Luau.Analysis STATIC)
 add_library(Luau.CodeGen STATIC)
 add_library(Luau.VM STATIC)
 add_library(isocline STATIC)
+
+include(FetchContent)
+FetchContent_Declare(
+  binaryen
+  GIT_REPOSITORY https://github.com/WebAssembly/binaryen.git
+  GIT_TAG        version_117
+)
+FetchContent_MakeAvailable(binaryen)
 
 if(LUAU_BUILD_CLI)
     add_executable(Luau.Repl.CLI)
@@ -78,6 +87,11 @@ target_link_libraries(Luau.Ast PUBLIC Luau.Common Luau.CLI.lib)
 target_compile_features(Luau.Compiler PUBLIC cxx_std_17)
 target_include_directories(Luau.Compiler PUBLIC Compiler/include)
 target_link_libraries(Luau.Compiler PUBLIC Luau.Ast)
+
+# HACK - binaryen doesn't set an include directory, seemingly..?
+target_include_directories(Luau.WasmCompiler PRIVATE build/_deps/binaryen-src/src)
+target_link_libraries(Luau.WasmCompiler PRIVATE Luau.Ast Luau.Analysis Luau.Compiler)
+target_link_libraries(Luau.WasmCompiler PUBLIC binaryen)
 
 target_compile_features(Luau.Config PUBLIC cxx_std_17)
 target_include_directories(Luau.Config PUBLIC Config/include)
@@ -225,7 +239,7 @@ if(LUAU_BUILD_CLI)
     target_link_libraries(Luau.Bytecode.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen Luau.CLI.lib)
 
     target_link_libraries(Luau.ToWasm.CLI PRIVATE osthreads)
-    target_link_libraries(Luau.ToWasm.CLI PRIVATE Luau.Analysis Luau.CLI.lib)
+    target_link_libraries(Luau.ToWasm.CLI PRIVATE Luau.Compiler Luau.WasmCompiler Luau.Analysis Luau.CLI.lib)
 endif()
 
 if(LUAU_BUILD_TESTS)

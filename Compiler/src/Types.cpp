@@ -8,6 +8,8 @@ LUAU_FASTFLAG(LuauCompileTempTypeInfo)
 
 namespace Luau
 {
+namespace Compile
+{
 
 static bool isGeneric(AstName name, const AstArray<AstGenericType>& generics)
 {
@@ -761,4 +763,5 @@ void buildTypeMap(DenseHashMap<AstExprFunction*, std::string>& functionTypes, De
     root->visit(&visitor);
 }
 
+} // namespace Compile
 } // namespace Luau

@@ -57,6 +57,12 @@ target_sources(Luau.Compiler PRIVATE
     Compiler/src/ValueTracking.h
 )
 
+target_sources(Luau.WasmCompiler PRIVATE
+    Compiler/include/Luau/WasmCompiler.h
+
+    Compiler/src/WasmCompiler.cpp
+)
+
 # Luau.Config Sources
 target_sources(Luau.Config PRIVATE
     Config/include/Luau/Config.h
