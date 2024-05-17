@@ -1,8 +1,8 @@
 local function opt(present: boolean, value: number)
-    local t = {}
-    t.present = present
-    t.value = value
-    return t
+  local t = {}
+  t.present = present
+  t.value = value
+  return t
 end
 
 local v = opt(true, 4);
