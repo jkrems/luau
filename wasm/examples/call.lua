@@ -1,13 +1,13 @@
-local function add(a: number, b: number)
-  return a + b;
+local function opt(present: boolean, value: number)
+    local t = {}
+    t.present = present
+    t.value = value
+    return t
 end
 
-local function fn()
-  local big = 40;
-  return add(big, 2);
+local v = opt(true, 4);
+if v.present then
+  print(v.value);
+else
+  print(-1);
 end
-
-local l = fn();
-print(l);
-
-return {fn = fn};

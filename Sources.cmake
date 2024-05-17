@@ -61,6 +61,8 @@ target_sources(Luau.WasmCompiler PRIVATE
     Compiler/include/Luau/WasmCompiler.h
 
     Compiler/src/WasmCompiler.cpp
+    Compiler/src/WasmTableShape.cpp
+    Compiler/src/WasmTableShape.h
 )
 
 # Luau.Config Sources
