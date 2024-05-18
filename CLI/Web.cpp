@@ -4,6 +4,11 @@
 #include "luacode.h"
 
 #include "Luau/Common.h"
+#include "Luau/WasmCompiler.h"
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/bind.h>
+#endif // __EMSCRIPTEN__
 
 #include <string>
 
@@ -112,3 +117,30 @@ extern "C" const char* executeScript(const char* source)
 
     return result.empty() ? NULL : result.c_str();
 }
+
+#ifdef __EMSCRIPTEN__
+
+emscripten::val luauToWasm(std::string source, int optLevel = 1, bool wat = false)
+{
+    // setup flags
+    for (Luau::FValue<bool>* flag = Luau::FValue<bool>::list; flag; flag = flag->next)
+        if (strncmp(flag->name, "Luau", 4) == 0)
+            flag->value = true;
+
+    Luau::WasmCompileOptions wasmOpts;
+    wasmOpts.format = wat ? Luau::WasmOutputFormat::WAT : Luau::WasmOutputFormat::WASM;
+    Luau::CompileOptions compileOpts;
+    compileOpts.optimizationLevel = optLevel;
+
+    static std::string wasm;
+
+    wasm = Luau::compileToWasm(source, wasmOpts, compileOpts);
+
+    return emscripten::val(emscripten::typed_memory_view(wasm.size(), wasm.data()));
+}
+
+EMSCRIPTEN_BINDINGS(LuauWeb) {
+    emscripten::function("luauToWasm", &luauToWasm);
+}
+
+#endif // __EMSCRIPTEN__

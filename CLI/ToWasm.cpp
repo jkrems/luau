@@ -156,6 +156,8 @@ int main(int argc, char** argv)
             compileOptions.optimizationLevel = 2;
         if (strcmp(argv[i], "-O1") == 0)
             compileOptions.optimizationLevel = 1;
+        if (strcmp(argv[i], "-O0") == 0)
+            compileOptions.optimizationLevel = 0;
     }
 
     std::vector<std::string> files = getSourceFiles(argc, argv);

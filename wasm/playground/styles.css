@@ -3,11 +3,16 @@ body {
   height: 100vh;
 }
 
+header {
+  line-height: 40px;
+  padding-inline: 10px;
+}
+
 main {
   display: grid;
   grid-template-columns: 50% 50%;
   grid-template-rows: 50% 50%;
-  height: 100vh;
   position: absolute;
   inset: 0;
+  top: 40px;
 }

@@ -460,11 +460,13 @@ private:
 
         AstStatBlock* stat = func->body;
 
+        AstStatReturn* exportsReturn;
         for (size_t i = 0; i < stat->body.size; ++i)
         {
             AstStat* sub = stat->body.data[i];
             if (isMain && sub->is<AstStatReturn>())
             {
+                exportsReturn = sub->as<AstStatReturn>();
                 continue;
             }
 
@@ -496,9 +498,21 @@ private:
 
         f.code = wasm.addFunction(builder.makeFunction(func->debugname.value, wasm::Signature(params, results), std::move(locals), body));
 
-        if (!isMain)
-        {
-            wasm.addExport(builder.makeExport(f.code->name, f.code->name, wasm::ExternalKind::Function));
+        if (exportsReturn && exportsReturn->list.size == 1) {
+            if (AstExprTable *tab = (*exportsReturn->list.data)->as<AstExprTable>()) {
+                for (auto &item : tab->items) {
+                    if (item.kind != AstExprTable::Item::Kind::Record) {
+                        continue;
+                    }
+
+                    AstExprConstantString *key = item.key->as<AstExprConstantString>();
+                    AstExprLocal *value = item.value->as<AstExprLocal>();
+                    if (key && value) {
+                        std::string exportName(key->value.begin(), key->value.end());
+                        wasm.addExport(builder.makeExport(exportName.c_str(), value->local->name.value, wasm::ExternalKind::Function));
+                    }
+                }
+            }
         }
 
         return fid;
@@ -857,11 +871,12 @@ std::unique_ptr<wasm::Module> compileToWasm(SourceModule* sourceModule, ModulePt
     WasmCompiler compiler(*wasm.get(), checkedModule, options);
     compiler.compile(*sourceModule->names, root);
 
-    if (options.optimizationLevel > 1)
+    if (options.optimizationLevel >= 1)
     {
         // Convert to binary format & parse.
         wasm::BufferWithRandomAccess buffer;
-        wasm::WasmBinaryWriter writer(wasm.get(), buffer);
+        wasm::PassOptions passOptions;
+        wasm::WasmBinaryWriter writer(wasm.get(), buffer, passOptions);
         writer.setNamesSection(true);
         writer.setEmitModuleName(true);
         writer.write();
@@ -917,7 +932,8 @@ std::string compileToWasm(Frontend& frontend, const std::string& moduleName, con
         else
         {
             wasm::BufferWithRandomAccess buffer;
-            wasm::WasmBinaryWriter writer(wasm.get(), buffer);
+            wasm::PassOptions passOptions;
+            wasm::WasmBinaryWriter writer(wasm.get(), buffer, passOptions);
             writer.setNamesSection(true);
             writer.setEmitModuleName(true);
             writer.write();

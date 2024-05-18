@@ -1,14 +1,27 @@
 <!DOCTYPE html>
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>Luau2Wasm Playground</title>
-<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/styles.css" />
 <body>
-<main>
-  <section id="src-edit"></section>
-  <section id="ast-edit"></section>
-  <section id="wat-edit"></section>
-  <section id="run-edit"></section>
-</main>
-<script src="https://jkrems.dev/wabt/demo/libwabt.js" async></script>
-<script src="/main.ts" type="module" async></script>
+  <header>
+    <form>
+      <label>
+        Optimization Level:
+        <select name="opt-level">
+          <option value="0">Disable wasm-opt (-O0)</option>
+          <option value="1">Quick (-O1)</option>
+          <option value="2">Most (-O2)</option>
+          <option value="3">Full (-O3)</option>
+        </select>
+      </label>
+    </form>
+  </header>
+  <main>
+    <section id="src-edit"></section>
+    <section id="ast-edit"></section>
+    <section id="wat-edit"></section>
+    <section id="run-edit"></section>
+  </main>
+  <script src="/Luau.Web.js"></script>
+  <script src="/main.ts" type="module" async></script>
 </body>
