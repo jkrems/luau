@@ -847,15 +847,41 @@ private:
     }
 };
 
-void compileToWasmOrThrow(wasm::Module& wasm, SourceModule* sourceModule, ModulePtr checkedModule, const CompileOptions& options)
+std::unique_ptr<wasm::Module> compileToWasm(SourceModule* sourceModule, ModulePtr checkedModule, const CompileOptions& options)
 {
+    auto wasm = std::make_unique<wasm::Module>();
+    wasm->features = wasm::FeatureSet::All;
+
     AstStatBlock* root = sourceModule->root;
 
-    WasmCompiler compiler(wasm, checkedModule, options);
+    WasmCompiler compiler(*wasm.get(), checkedModule, options);
     compiler.compile(*sourceModule->names, root);
+
+    if (options.optimizationLevel > 1)
+    {
+        // Convert to binary format & parse.
+        wasm::BufferWithRandomAccess buffer;
+        wasm::WasmBinaryWriter writer(wasm.get(), buffer);
+        writer.setNamesSection(true);
+        writer.setEmitModuleName(true);
+        writer.write();
+
+        std::vector<char> bytes(buffer.begin(), buffer.end());
+        wasm = std::make_unique<wasm::Module>();
+        wasm::WasmBinaryReader reader(*wasm.get(), wasm::FeatureSet::All, bytes);
+        reader.read();
+
+        // Run binaryen optimization passes.
+        wasm::PassRunner runner(wasm.get());
+        runner.options.optimizeLevel = options.optimizationLevel;
+        runner.addDefaultOptimizationPasses();
+        runner.run();
+    }
+
+    return wasm;
 }
 
-std::string compileToWat(Frontend& frontend, const std::string& moduleName, const WasmCompileOptions& wasmOptions, const CompileOptions& options,
+std::string compileToWasm(Frontend& frontend, const std::string& moduleName, const WasmCompileOptions& wasmOptions, const CompileOptions& options,
     const ParseOptions& parseOptions)
 {
     // Force some necessary options.
@@ -880,20 +906,18 @@ std::string compileToWat(Frontend& frontend, const std::string& moduleName, cons
 
     try
     {
-        wasm::Module wasm;
-        wasm.features = wasm::FeatureSet::All;
-        compileToWasmOrThrow(wasm, sourceModule, checkedModule, options);
+        std::unique_ptr<wasm::Module> wasm = compileToWasm(sourceModule, checkedModule, options);
 
         if (wasmOptions.format == WasmOutputFormat::WAT)
         {
             std::ostringstream ss;
-            ss << wasm;
+            ss << *wasm.get();
             return ss.str();
         }
         else
         {
             wasm::BufferWithRandomAccess buffer;
-            wasm::WasmBinaryWriter writer(&wasm, buffer);
+            wasm::WasmBinaryWriter writer(wasm.get(), buffer);
             writer.setNamesSection(true);
             writer.setEmitModuleName(true);
             writer.write();
@@ -923,7 +947,7 @@ struct StaticStringFileResolver : FileResolver
     }
 };
 
-std::string compileToWat(
+std::string compileToWasm(
     const std::string& source, const WasmCompileOptions& wasmOptions, const CompileOptions& options, const ParseOptions& parseOptions)
 {
     StaticStringFileResolver fileResolver(source);
@@ -934,7 +958,7 @@ std::string compileToWat(
 
     std::string moduleName = "";
 
-    return compileToWat(frontend, moduleName, wasmOptions, options, parseOptions);
+    return compileToWasm(frontend, moduleName, wasmOptions, options, parseOptions);
 }
 
 } // namespace Luau

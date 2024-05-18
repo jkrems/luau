@@ -21,6 +21,7 @@ static void displayHelp(const char* argv0)
     printf("\n");
     printf("Available options:\n");
     printf("  --format=wat: Generate wat instead of wasm\n");
+    printf("  -On: Enable optimizations\n");
 }
 
 static int assertionHandler(const char* expr, const char* file, int line, const char* function)
@@ -140,6 +141,7 @@ int main(int argc, char** argv)
     Luau::Frontend frontend(&fileResolver, &configResolver, {});
 
     Luau::WasmCompileOptions wasmOptions;
+    Luau::CompileOptions compileOptions;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -148,13 +150,19 @@ int main(int argc, char** argv)
 
         if (strcmp(argv[i], "--format=wat") == 0)
             wasmOptions.format = Luau::WasmOutputFormat::WAT;
+        if (strcmp(argv[i], "-O3") == 0)
+            compileOptions.optimizationLevel = 3;
+        if (strcmp(argv[i], "-O2") == 0)
+            compileOptions.optimizationLevel = 2;
+        if (strcmp(argv[i], "-O1") == 0)
+            compileOptions.optimizationLevel = 1;
     }
 
     std::vector<std::string> files = getSourceFiles(argc, argv);
 
     for (const std::string& path : files)
     {
-        std::string wat = Luau::compileToWat(frontend, path, wasmOptions);
+        std::string wat = Luau::compileToWasm(frontend, path, wasmOptions, compileOptions);
         std::cout << wat;
     }
 

@@ -22,10 +22,10 @@ struct WasmCompileOptions
     WasmOutputFormat format = WasmOutputFormat::WASM;
 };
 
-std::string compileToWat(Frontend& frontend, const std::string& filename, const WasmCompileOptions& wasmOptions = {},
+std::string compileToWasm(Frontend& frontend, const std::string& filename, const WasmCompileOptions& wasmOptions = {},
     const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
 
-std::string compileToWat(
+std::string compileToWasm(
     const std::string& source, const WasmCompileOptions& wasmOptions = {}, const CompileOptions& options = {}, const ParseOptions& parseOptions = {});
 
 } // namespace Luau
