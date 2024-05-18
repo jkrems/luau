@@ -1,37 +1,68 @@
 <!DOCTYPE html>
-<script>self["MonacoEnvironment"] = (function (paths) {
-          return {
-            globalAPI: false,
-            getWorkerUrl : function (moduleId, label) {
-              var result =  paths[label];
-              if (/^((http:)|(https:)|(file:)|(\/\/))/.test(result)) {
-                var currentUrl = String(window.location);
-                var currentOrigin = currentUrl.substr(0, currentUrl.length - window.location.hash.length - window.location.search.length - window.location.pathname.length);
-                if (result.substring(0, currentOrigin.length) !== currentOrigin) {
-                  var js = '/*' + label + '*/importScripts("' + result + '");';
-                  var blob = new Blob([js], { type: 'application/javascript' });
-                  return URL.createObjectURL(blob);
-                }
-              }
-              return result;
-            }
-          };
-        })({
-  "editorWorkerService": "/luau/playground/monacoeditorwork/editor.worker.bundle.js",
-  "json": "/luau/playground/monacoeditorwork/json.worker.bundle.js"
-});</script>
-
-<meta charset="utf-8">
+<meta charset="utf-8" />
 <title>Luau2Wasm Playground</title>
-<script async type="module" crossorigin src="/luau/playground/assets/index-CCzEDsem.js"></script>
-<link rel="stylesheet" crossorigin href="/luau/playground/assets/index-DtB-mRWA.css">
+<script
+  async
+  type="module"
+  crossorigin
+  src="/luau/playground/assets/index-BDpGfD9d.js"
+></script>
+<link
+  rel="stylesheet"
+  crossorigin
+  href="/luau/playground/assets/index-C5cKeNS9.css"
+/>
 
 <body>
-<main>
-  <section id="src-edit"></section>
-  <section id="ast-edit"></section>
-  <section id="wat-edit"></section>
-  <section id="run-edit"></section>
-</main>
-<script src="https://jkrems.dev/wabt/demo/libwabt.js" async></script>
+  <header>
+    <script>
+      self["MonacoEnvironment"] = (function (paths) {
+        return {
+          globalAPI: false,
+          getWorkerUrl: function (moduleId, label) {
+            var result = paths[label];
+            if (/^((http:)|(https:)|(file:)|(\/\/))/.test(result)) {
+              var currentUrl = String(window.location);
+              var currentOrigin = currentUrl.substr(
+                0,
+                currentUrl.length -
+                  window.location.hash.length -
+                  window.location.search.length -
+                  window.location.pathname.length
+              );
+              if (result.substring(0, currentOrigin.length) !== currentOrigin) {
+                var js = "/*" + label + '*/importScripts("' + result + '");';
+                var blob = new Blob([js], { type: "application/javascript" });
+                return URL.createObjectURL(blob);
+              }
+            }
+            return result;
+          },
+        };
+      })({
+        editorWorkerService:
+          "/luau/playground/monacoeditorwork/editor.worker.bundle.js",
+        json: "/luau/playground/monacoeditorwork/json.worker.bundle.js",
+      });
+    </script>
+
+    <form>
+      <label>
+        Optimization Level:
+        <select name="opt-level">
+          <option value="0">Disable wasm-opt (-O0)</option>
+          <option value="1">Quick (-O1)</option>
+          <option value="2">Most (-O2)</option>
+          <option value="3">Full (-O3)</option>
+        </select>
+      </label>
+    </form>
+  </header>
+  <main>
+    <section id="src-edit"></section>
+    <section id="ast-edit"></section>
+    <section id="wat-edit"></section>
+    <section id="run-edit"></section>
+  </main>
+  <script src="/luau/playground/Luau.Web.js"></script>
 </body>
