@@ -3,9 +3,9 @@ import * as monaco from "monaco-editor";
 import { LuauSyntaxError, isLuauSyntaxError, parse } from "../src/parse";
 import { language as watLang, conf as watConf } from "./wat.monarch";
 
-interface LuauWebModule {
-  luauToWasm(code: string, optLevel: number, asWat: boolean): Uint8Array;
-}
+type LuauWebModule = Awaited<
+  ReturnType<typeof import("./Luau.Web")["default"]>
+>;
 
 function createEditor(
   name: string,
@@ -26,10 +26,28 @@ function registerLanguages() {
   monaco.languages.setMonarchTokensProvider("wat", watLang);
 }
 
+const DEFAULT_PROGRAM = `type Vector2d = {x: number, y: number}
+
+local function vec2d(x: number, y: number)
+    local v = {};
+    v.x = x;
+    v.y = y;
+    return v;
+end
+
+local function vecLen(v: Vector2d)
+    return (v.x * v.x + v.y * v.y) ^ 0.5;
+end
+
+local m: Vector2d = vec2d(3, 4);
+print(vecLen(m));
+`;
+
 function main(luau: LuauWebModule) {
   registerLanguages();
 
-  const lastSource = window.localStorage.getItem("lastSource") ?? "print(2);\n";
+  const lastSource =
+    window.localStorage.getItem("lastSource") ?? DEFAULT_PROGRAM;
 
   const srcEditor = createEditor("src", "lua", lastSource);
   const srcDecorations = srcEditor.createDecorationsCollection();
@@ -131,8 +149,9 @@ const documentIsReady = /^loaded|^i|^c/.test(document.readyState)
       window.addEventListener("load", resolve, { once: true });
     });
 
-function loadWasmCode(): LuauWebModule {
-  return globalThis.Module;
+async function loadWasmCode(): Promise<LuauWebModule> {
+  const { default: loadLuauWeb } = await import("./Luau.Web");
+  return loadLuauWeb();
 }
 
 Promise.all([loadWasmCode(), documentIsReady]).then(

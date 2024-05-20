@@ -596,6 +596,41 @@ private:
                 }
             }
         }
+        else if (auto* compAssign = stat->as<AstStatCompoundAssign>())
+        {
+            wasm::Expression* right = compileExpr(compAssign->value);
+
+            if (auto* targetLocal = compAssign->var->as<AstExprLocal>())
+            {
+                AstLocal* target = targetLocal->local;
+                Local& l = locals[target];
+                LUAU_ASSERT(l.allocated);
+
+                wasm::Expression* left = builder.makeLocalGet(l.reg, l.type);
+                wasm::Expression* newValue = toWasmBinaryExpr(compAssign->op, left, right);
+
+                appendToBlock(builder.makeLocalSet(l.reg, newValue));
+            }
+            else if (auto* propExpr = compAssign->var->as<AstExprIndexName>())
+            {
+                Local* tableRef = compileTableToLocal(propExpr);
+                LUAU_ASSERT(tableRef);
+
+                auto fieldRef = resolveTableFieldNameRef(tableRef->typeId, propExpr->index);
+                LUAU_ASSERT(fieldRef);
+
+                wasm::Expression* getTable = builder.makeLocalGet(tableRef->reg, tableRef->type);
+
+                wasm::Expression* left = builder.makeStructGet(fieldRef->index, getTable, fieldRef->type);
+                wasm::Expression* newValue = toWasmBinaryExpr(compAssign->op, left, right);
+
+                appendToBlock(builder.makeStructSet(fieldRef->index, getTable, newValue));
+            }
+            else
+            {
+                printf(";; TODO: Assign to non-local expr\n");
+            }
+        }
         else if (auto* exprStat = stat->as<AstStatExpr>())
         {
             wasm::Expression* expr = compileExpr(exprStat->expr);
@@ -631,6 +666,10 @@ private:
             wasm::Expression* ifTrue = compileBody(ifBr->thenbody);
             wasm::Expression* ifFalse = compileBody(ifBr->elsebody);
             appendToBlock(builder.makeIf(condition, ifTrue, ifFalse));
+        }
+        else if (auto* typeDecl = stat->as<AstStatTypeAlias>())
+        {
+            // Ignore, nothing to be done.
         }
         else
         {
@@ -679,16 +718,114 @@ private:
         return finishBlock();
     }
 
-    wasm::BinaryOp toWasmBinaryOp(AstExprBinary::Op op)
+    wasm::Expression* toWasmBinaryExpr(AstExprBinary::Op astOp, wasm::Expression* left, wasm::Expression* right)
     {
-        switch (op)
+        bool isInt32CastOp = false;
+        wasm::BinaryOp op;
+
+        switch (astOp)
         {
         case AstExprBinary::Op::Add:
-            return wasm::BinaryOp::AddFloat64;
+            op = wasm::BinaryOp::AddFloat64;
+            break;
+
+        case AstExprBinary::Op::Sub:
+            op = wasm::BinaryOp::SubFloat64;
+            break;
+
+        case AstExprBinary::Op::Mul:
+            op = wasm::BinaryOp::MulFloat64;
+            break;
+
+        case AstExprBinary::Op::Div:
+            op = wasm::BinaryOp::DivFloat64;
+            break;
+
+        case AstExprBinary::Op::FloorDiv:
+            op = wasm::BinaryOp::DivSInt32;
+            isInt32CastOp = true;
+            break;
+
+        case AstExprBinary::Op::Mod:
+            op = wasm::BinaryOp::RemSInt32;
+            isInt32CastOp = true;
+            break;
+
+        case AstExprBinary::Op::Pow:
+        {
+            wasm::Expression* fallback = builder.makeUnreachable();
+
+            // TODO: Store left and right in registers to prevent doubling side
+            // effects here.
+            wasm::Expression* isPow2 = builder.makeBinary(wasm::BinaryOp::EqFloat64, right, builder.makeConst(2.0));
+            wasm::Expression* pow2 = builder.makeBinary(wasm::BinaryOp::MulFloat64, left, left);
+
+            wasm::Expression* isSqrt = builder.makeBinary(wasm::BinaryOp::EqFloat64, right, builder.makeConst(0.5));
+            wasm::Expression* sqrt = builder.makeUnary(wasm::UnaryOp::SqrtFloat64, left);
+
+            wasm::Expression* isNoop = builder.makeBinary(wasm::BinaryOp::EqFloat64, right, builder.makeConst(1.0));
+            wasm::Expression* noop = left;
+
+            return builder.makeIf(isNoop, noop, builder.makeIf(isSqrt, sqrt, builder.makeIf(isPow2, pow2, fallback)));
+        }
+
+            // case AstExprBinary::Op::Concat:
+            //     op = wasm::BinaryOp::ConcatFloat64;
+            //     break;
+
+        case AstExprBinary::Op::CompareNe:
+            op = wasm::BinaryOp::NeFloat64;
+            break;
+
+        case AstExprBinary::Op::CompareEq:
+            op = wasm::BinaryOp::EqFloat64;
+            break;
+
+        case AstExprBinary::Op::CompareLt:
+            op = wasm::BinaryOp::LtFloat64;
+            break;
+
+        case AstExprBinary::Op::CompareLe:
+            op = wasm::BinaryOp::LeFloat64;
+            break;
+
+        case AstExprBinary::Op::CompareGt:
+            op = wasm::BinaryOp::GtFloat64;
+            break;
+
+        case AstExprBinary::Op::CompareGe:
+            op = wasm::BinaryOp::GeFloat64;
+            break;
+
+        case AstExprBinary::Op::And:
+            op = wasm::BinaryOp::AndInt32;
+            break;
+
+        case AstExprBinary::Op::Or:
+            op = wasm::BinaryOp::OrInt32;
+            break;
 
         default:
-            return wasm::BinaryOp::XorVec128;
+            printf("Unhandled binary op: %d\n", astOp);
+            op = wasm::BinaryOp::XorVec128;
+            break;
         }
+
+        if (isInt32CastOp)
+        {
+            // Convert operands to i32.
+            left = builder.makeUnary(wasm::UnaryOp::TruncSFloat64ToInt32, left);
+            right = builder.makeUnary(wasm::UnaryOp::TruncSFloat64ToInt32, right);
+        }
+
+        wasm::Expression* res = builder.makeBinary(op, left, right);
+
+        if (isInt32CastOp)
+        {
+            return builder.makeUnary(wasm::UnaryOp::ConvertSInt32ToFloat64, res);
+        }
+
+        return res;
     }
 
     wasm::UnaryOp toWasmUnaryOp(AstExprUnary::Op op)
@@ -698,7 +835,12 @@ private:
         case AstExprUnary::Op::Minus:
             return wasm::UnaryOp::NegFloat64;
 
+        case AstExprUnary::Op::Not:
+            // `true` for 0, `false` otherwise.
+            return wasm::UnaryOp::EqZInt32;
+
         default:
+            printf("Unhandled unary op: %d\n", op);
             return wasm::UnaryOp::NegVecF32x4;
         }
     }
@@ -748,7 +890,11 @@ private:
 
     wasm::Expression* compileExpr(AstExpr* expr)
     {
-        if (auto* loc = expr->as<AstExprLocal>())
+        if (auto* grp = expr->as<AstExprGroup>())
+        {
+            return compileExpr(grp->expr);
+        }
+        else if (auto* loc = expr->as<AstExprLocal>())
         {
             AstLocal* target = loc->local;
             // 1. Find local.
@@ -824,7 +970,7 @@ private:
         {
             wasm::Expression* left = compileExpr(bin->left);
             wasm::Expression* right = compileExpr(bin->right);
-            return builder.makeBinary(toWasmBinaryOp(bin->op), left, right);
+            return toWasmBinaryExpr(bin->op, left, right);
         }
         else if (auto* unary = expr->as<AstExprUnary>())
         {

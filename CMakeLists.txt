@@ -89,7 +89,7 @@ target_include_directories(Luau.Compiler PUBLIC Compiler/include)
 target_link_libraries(Luau.Compiler PUBLIC Luau.Ast)
 
 # HACK - binaryen doesn't set an include directory, seemingly..?
-target_include_directories(Luau.WasmCompiler PRIVATE build/_deps/binaryen-src/src)
+target_include_directories(Luau.WasmCompiler PRIVATE "${binaryen_SOURCE_DIR}/src")
 target_link_libraries(Luau.WasmCompiler PUBLIC Luau.Ast Luau.Analysis Luau.Compiler)
 target_link_libraries(Luau.WasmCompiler PUBLIC binaryen)
 
@@ -271,7 +271,7 @@ if(LUAU_BUILD_WEB)
     target_link_libraries(Luau.Web PRIVATE Luau.WasmCompiler Luau.Compiler Luau.VM)
 
     # declare exported functions to emscripten
-    target_link_options(Luau.Web PRIVATE --bind -sEXPORTED_FUNCTIONS=['_executeScript'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap'])
+    target_link_options(Luau.Web PRIVATE --bind --emit-tsd -sENVIRONMENT=web -sEXPORT_ES6 -sEXPORTED_FUNCTIONS=['_executeScript'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap'])
 
     # add -fexceptions for emscripten to allow exceptions to be caught in C++
     target_link_options(Luau.Web PRIVATE -fexceptions)
