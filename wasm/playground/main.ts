@@ -4,6 +4,16 @@ import { LuauSyntaxError, isLuauSyntaxError, parse } from "../src/parse";
 import { language as watLang, conf as watConf } from "./wat.monarch";
 import { CompilationResult } from "./Luau.Web";
 
+import EXAMPLE_CALL from "../examples/call.lua?raw";
+import EXAMPLE_OPS from "../examples/ops.lua?raw";
+import EXAMPLE_VEC from "../examples/vec.lua?raw";
+
+const EXAMPLES = new Map<string, string>([
+  ["call.lua", EXAMPLE_CALL],
+  ["ops.lua", EXAMPLE_OPS],
+  ["vec.lua", EXAMPLE_VEC],
+]);
+
 type LuauWebModule = Awaited<
   ReturnType<typeof import("./Luau.Web")["default"]>
 >;
@@ -144,6 +154,22 @@ function main({ luauToWasm }: LuauWebModule) {
       result = null;
     }
   }
+
+  const exampleSelect = document.querySelector(
+    'select[name="load-example'
+  ) as HTMLSelectElement;
+  for (const exampleName of EXAMPLES.keys()) {
+    const opt = document.createElement("option");
+    opt.value = exampleName;
+    opt.textContent = exampleName;
+    exampleSelect.appendChild(opt);
+  }
+  exampleSelect.addEventListener("change", () => {
+    const exampleName = exampleSelect.value;
+    if (exampleName) {
+      srcEditor.setValue(EXAMPLES.get(exampleName)!);
+    }
+  });
 
   srcEditor.onDidChangeModelContent(reparseSource);
   queueMicrotask(reparseSource);
