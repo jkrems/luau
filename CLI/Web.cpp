@@ -120,7 +120,26 @@ extern "C" const char* executeScript(const char* source)
 
 #ifdef __EMSCRIPTEN__
 
-emscripten::val luauToWasm(std::string source, int optLevel = 1, bool wat = false)
+class CompilationResult
+{
+public:
+    CompilationResult() {}
+
+    CompilationResult(const std::string& out)
+        : output(out)
+    {
+    }
+
+    emscripten::val getOutput()
+    {
+        return emscripten::val(emscripten::typed_memory_view(output.size(), output.data()));
+    }
+
+private:
+    std::string output;
+};
+
+std::unique_ptr<CompilationResult> luauToWasm(std::string source, int optLevel = 1, bool wat = false)
 {
     // setup flags
     for (Luau::FValue<bool>* flag = Luau::FValue<bool>::list; flag; flag = flag->next)
@@ -132,15 +151,15 @@ emscripten::val luauToWasm(std::string source, int optLevel = 1, bool wat = fals
     Luau::CompileOptions compileOpts;
     compileOpts.optimizationLevel = optLevel;
 
-    static std::string wasm;
+    std::string wasm = Luau::compileToWasm(source, wasmOpts, compileOpts);
 
-    wasm = Luau::compileToWasm(source, wasmOpts, compileOpts);
-
-    return emscripten::val(emscripten::typed_memory_view(wasm.size(), wasm.data()));
+    return std::make_unique<CompilationResult>(wasm);
 }
 
 EMSCRIPTEN_BINDINGS(LuauWeb) {
     emscripten::function("luauToWasm", &luauToWasm);
+
+    emscripten::class_<CompilationResult>("CompilationResult").constructor().function("getOutput", &CompilationResult::getOutput);
 }
 
 #endif // __EMSCRIPTEN__

@@ -2,6 +2,7 @@ import * as monaco from "monaco-editor";
 
 import { LuauSyntaxError, isLuauSyntaxError, parse } from "../src/parse";
 import { language as watLang, conf as watConf } from "./wat.monarch";
+import { CompilationResult } from "./Luau.Web";
 
 type LuauWebModule = Awaited<
   ReturnType<typeof import("./Luau.Web")["default"]>
@@ -43,7 +44,7 @@ local m: Vector2d = vec2d(3, 4);
 print(vecLen(m));
 `;
 
-function main(luau: LuauWebModule) {
+function main({ luauToWasm }: LuauWebModule) {
   registerLanguages();
 
   const lastSource =
@@ -52,7 +53,7 @@ function main(luau: LuauWebModule) {
   const srcEditor = createEditor("src", "lua", lastSource);
   const srcDecorations = srcEditor.createDecorationsCollection();
 
-  const astEditor = createEditor("ast", "json");
+  const astEditor = createEditor("raw", "wat");
 
   const watEditor = createEditor("wat", "wat");
 
@@ -70,35 +71,11 @@ function main(luau: LuauWebModule) {
 
     const optLevel = +optLevelSelect.value;
 
-    // let ast;
-    // try {
-    //   ast = parse(code);
-    //   astEditor.setValue(JSON.stringify(ast, null, 2));
-    //   monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", []);
-    // } catch (e) {
-    //   if (isLuauSyntaxError(e)) {
-    //     monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
-    //       {
-    //         message: `${e.message}`,
-    //         severity: monaco.MarkerSeverity.Error,
-    //         startLineNumber: e.location.start.line,
-    //         startColumn: e.location.start.column,
-    //         endLineNumber: e.location.end.line,
-    //         endColumn: e.location.end.column,
-    //       },
-    //     ]);
-    //     astEditor.setValue(
-    //       `At input.lua:${e.location.start.line}:${e.location.start.column} (${e.location.start.offset})\n\n${e.message}`
-    //     );
-    //     return;
-    //   } else {
-    //     throw e;
-    //   }
-    // }
+    let result: CompilationResult | null = null;
 
     try {
-      const wat = luau.luauToWasm(code, optLevel, true);
-      watEditor.setValue(new TextDecoder().decode(wat));
+      result = luauToWasm(code, 0, true);
+      astEditor.setValue(new TextDecoder().decode(result.getOutput()));
     } catch (e) {
       console.error(e);
       watEditor.setValue(`${e}`);
@@ -115,12 +92,40 @@ function main(luau: LuauWebModule) {
         ]);
       }
       return;
+    } finally {
+      result?.delete();
+      result = null;
+    }
+
+    try {
+      result = luauToWasm(code, optLevel, true);
+      watEditor.setValue(new TextDecoder().decode(result.getOutput()));
+    } catch (e) {
+      console.error(e);
+      watEditor.setValue(`${e}`);
+      if (isLuauSyntaxError(e)) {
+        monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
+          {
+            message: `${e.message}`,
+            severity: monaco.MarkerSeverity.Error,
+            startLineNumber: e.location.start.line,
+            startColumn: e.location.start.column,
+            endLineNumber: e.location.end.line,
+            endColumn: e.location.end.column,
+          },
+        ]);
+      }
+      return;
+    } finally {
+      result?.delete();
+      result = null;
     }
 
     try {
       runEditor.setValue("<running>\n");
 
-      const binaryOutput = luau.luauToWasm(code, optLevel, false);
+      result = luauToWasm(code, optLevel, false);
+      const binaryOutput = result.getOutput();
 
       await WebAssembly.instantiate(binaryOutput, {
         "luau:util": {
@@ -134,6 +139,9 @@ function main(luau: LuauWebModule) {
     } catch (e) {
       runEditor.setValue(`${e}`);
       return;
+    } finally {
+      result?.delete();
+      result = null;
     }
   }
 

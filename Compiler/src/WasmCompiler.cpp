@@ -474,19 +474,20 @@ private:
         }
 
         wasm::TypeList locals;
+        locals.resize(localStack.size() + registers.size() - localsOffset);
         // Find locals that have been declared, minus the known params.
         for (uint8_t li = args + localsOffset; li < localStack.size(); ++li)
         {
             AstLocal* astLocal = localStack[li];
             Local& l = this->locals[astLocal];
             LUAU_ASSERT(l.allocated);
-            locals.push_back(l.type);
+            locals[l.reg - localsOffset] = l.type;
         }
 
         for (auto& reg : registers)
         {
             LUAU_ASSERT(reg.allocated);
-            locals.push_back(reg.type);
+            locals[reg.reg - localsOffset] = reg.type;
         }
 
         popLocals(0);
@@ -753,10 +754,16 @@ private:
 
         case AstExprBinary::Op::Pow:
         {
+            uint8_t leftReg = this->pushRegLocal(nullptr, nullptr, wasm::Type::f64);
+            wasm::Expression* storeLeft = builder.makeLocalSet(leftReg, left);
+            uint8_t rightReg = this->pushRegLocal(nullptr, nullptr, wasm::Type::f64);
+            wasm::Expression* storeRight = builder.makeLocalSet(rightReg, right);
+
+            left = builder.makeLocalGet(leftReg, wasm::Type::f64);
+            right = builder.makeLocalGet(rightReg, wasm::Type::f64);
+
             wasm::Expression* fallback = builder.makeUnreachable();
 
-            // TODO: Store left and right in registers to prevent doubling side
-            // effects here.
             wasm::Expression* isPow2 = builder.makeBinary(wasm::BinaryOp::EqFloat64, right, builder.makeConst(2.0));
             wasm::Expression* pow2 = builder.makeBinary(wasm::BinaryOp::MulFloat64, left, left);
 
@@ -766,7 +773,8 @@ private:
             wasm::Expression* isNoop = builder.makeBinary(wasm::BinaryOp::EqFloat64, right, builder.makeConst(1.0));
             wasm::Expression* noop = left;
 
-            return builder.makeIf(isNoop, noop, builder.makeIf(isSqrt, sqrt, builder.makeIf(isPow2, pow2, fallback)));
+            return builder.makeBlock(
+                {storeLeft, storeRight, builder.makeIf(isNoop, noop, builder.makeIf(isSqrt, sqrt, builder.makeIf(isPow2, pow2, fallback)))});
         }
 
             // case AstExprBinary::Op::Concat:
@@ -1094,11 +1102,11 @@ std::string compileToWasm(Frontend& frontend, const std::string& moduleName, con
     }
 }
 
-struct StaticStringFileResolver : FileResolver
+struct StringContentsFileResolver : FileResolver
 {
     std::string code;
 
-    StaticStringFileResolver(const std::string& code)
+    StringContentsFileResolver(const std::string& code)
         : code(code)
     {
     }
@@ -1112,7 +1120,7 @@ struct StaticStringFileResolver : FileResolver
 std::string compileToWasm(
     const std::string& source, const WasmCompileOptions& wasmOptions, const CompileOptions& options, const ParseOptions& parseOptions)
 {
-    StaticStringFileResolver fileResolver(source);
+    StringContentsFileResolver fileResolver(source);
     NullConfigResolver configResolver;
     // Default to strict mode since we need good type info.
     configResolver.defaultConfig.mode = Mode::Strict;

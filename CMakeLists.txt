@@ -34,6 +34,7 @@ add_library(Luau.VM STATIC)
 add_library(isocline STATIC)
 
 include(FetchContent)
+set(BUILD_STATIC_LIB ON CACHE BOOL "Build binaryen as a static lib" FORCE)
 FetchContent_Declare(
   binaryen
   GIT_REPOSITORY https://github.com/WebAssembly/binaryen.git
@@ -271,7 +272,13 @@ if(LUAU_BUILD_WEB)
     target_link_libraries(Luau.Web PRIVATE Luau.WasmCompiler Luau.Compiler Luau.VM)
 
     # declare exported functions to emscripten
-    target_link_options(Luau.Web PRIVATE --bind --emit-tsd -sENVIRONMENT=web -sEXPORT_ES6 -sEXPORTED_FUNCTIONS=['_executeScript'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap'])
+    target_link_options(Luau.Web PRIVATE -sEXPORTED_FUNCTIONS=['_executeScript'] -sEXPORTED_RUNTIME_METHODS=['ccall','cwrap'])
+
+    # only target web, without support for file systems
+    target_link_options(Luau.Web PRIVATE -sENVIRONMENT=web)
+
+    # use embind
+    target_link_options(Luau.Web PRIVATE --bind -sEXPORT_ES6)
 
     # add -fexceptions for emscripten to allow exceptions to be caught in C++
     target_link_options(Luau.Web PRIVATE -fexceptions)
