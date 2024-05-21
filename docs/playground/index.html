@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <meta charset="utf-8" />
 <title>Luau2Wasm Playground</title>
-<script type="module" crossorigin src="/luau/playground/assets/index-QjxsWNnu.js"></script>
+<script type="module" crossorigin src="/luau/playground/assets/index-WA8-KKb9.js"></script>
 <link rel="stylesheet" crossorigin href="/luau/playground/assets/index-C5cKeNS9.css">
 
 <body>
@@ -34,8 +34,15 @@
         <select name="opt-level">
           <option value="0">Disable wasm-opt (-O0)</option>
           <option value="1">Quick (-O1)</option>
-          <option value="2">Most (-O2)</option>
+          <option value="2"
+                  selected>Most (-O2)</option>
           <option value="3">Full (-O3)</option>
+        </select>
+      </label>
+      <label>
+        Example:
+        <select name="load-example">
+          <option val="">-</option>
         </select>
       </label>
     </form>
