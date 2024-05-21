@@ -34,6 +34,7 @@
 * How can prototype chains be expressed?
 * What would structural typing look like?
 * Best way of modelling index signatures?
+* Where's the line between "self-contained" and "don't ship yet another basic math function"?
 
 ## References
 
