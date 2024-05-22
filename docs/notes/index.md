@@ -29,14 +29,14 @@
 
 ## Questions
 
-* How to box/unbox to get decent interop with JS?
-* How do closures work? How much overhead do they require?
-* How can prototype chains be expressed?
-* What would structural typing look like?
-* Best way of modelling index signatures?
-* Where's the line between "self-contained" and "don't ship yet another basic math function"?
+- How to box/unbox to get decent interop with JS?
+- How do closures work? How much overhead do they require?
+- How can prototype chains be expressed?
+- What would structural typing look like?
+- Best way of modelling index signatures?
+- Where's the line between "self-contained" and "don't ship yet another basic math function"?
 
 ## References
 
-* [wat2wasm demo](https://jkrems.dev/wabt/demo/wat2wasm/index.html)
-* https://v8.dev/blog/wasm-gc-porting
+- [wat2wasm demo](https://jkrems.dev/wabt/demo/wat2wasm/index.html)
+- https://v8.dev/blog/wasm-gc-porting
