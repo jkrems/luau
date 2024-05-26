@@ -1,11 +1,13 @@
 import * as monaco from "monaco-editor";
 
-import { LuauSyntaxError, isLuauSyntaxError, parse } from "../src/parse";
 import { language as watLang, conf as watConf } from "./wat.monarch";
 import { CompilationResult } from "./Luau.Web";
 
+// @ts-ignore
 import EXAMPLE_CALL from "../examples/call.lua?raw";
+// @ts-ignore
 import EXAMPLE_OPS from "../examples/ops.lua?raw";
+// @ts-ignore
 import EXAMPLE_VEC from "../examples/vec.lua?raw";
 
 const EXAMPLES = new Map<string, string>([
@@ -37,28 +39,10 @@ function registerLanguages() {
   monaco.languages.setMonarchTokensProvider("wat", watLang);
 }
 
-const DEFAULT_PROGRAM = `type Vector2d = {x: number, y: number}
-
-local function vec2d(x: number, y: number)
-    local v = {};
-    v.x = x;
-    v.y = y;
-    return v;
-end
-
-local function vecLen(v: Vector2d)
-    return (v.x * v.x + v.y * v.y) ^ 0.5;
-end
-
-local m: Vector2d = vec2d(3, 4);
-print(vecLen(m));
-`;
-
 function main({ luauToWasm }: LuauWebModule) {
   registerLanguages();
 
-  const lastSource =
-    window.localStorage.getItem("lastSource") ?? DEFAULT_PROGRAM;
+  const lastSource = window.localStorage.getItem("lastSource") ?? EXAMPLE_VEC;
 
   const srcEditor = createEditor("src", "lua", lastSource);
   const srcDecorations = srcEditor.createDecorationsCollection();
@@ -89,18 +73,6 @@ function main({ luauToWasm }: LuauWebModule) {
     } catch (e) {
       console.error(e);
       watEditor.setValue(`${e}`);
-      if (isLuauSyntaxError(e)) {
-        monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
-          {
-            message: `${e.message}`,
-            severity: monaco.MarkerSeverity.Error,
-            startLineNumber: e.location.start.line,
-            startColumn: e.location.start.column,
-            endLineNumber: e.location.end.line,
-            endColumn: e.location.end.column,
-          },
-        ]);
-      }
       return;
     } finally {
       result?.delete();
@@ -113,18 +85,6 @@ function main({ luauToWasm }: LuauWebModule) {
     } catch (e) {
       console.error(e);
       watEditor.setValue(`${e}`);
-      if (isLuauSyntaxError(e)) {
-        monaco.editor.setModelMarkers(srcEditor.getModel()!, "luau", [
-          {
-            message: `${e.message}`,
-            severity: monaco.MarkerSeverity.Error,
-            startLineNumber: e.location.start.line,
-            startColumn: e.location.start.column,
-            endLineNumber: e.location.end.line,
-            endColumn: e.location.end.column,
-          },
-        ]);
-      }
       return;
     } finally {
       result?.delete();
@@ -137,13 +97,32 @@ function main({ luauToWasm }: LuauWebModule) {
       result = luauToWasm(code, optLevel, false);
       const binaryOutput = result.getOutput();
 
-      await WebAssembly.instantiate(binaryOutput, {
+      let memory: WebAssembly.Memory;
+      const { instance } = await WebAssembly.instantiate(binaryOutput, {
         "luau:util": {
           print: (value: unknown) => {
             runEditor.setValue(runEditor.getValue() + `print: ${value}\n`);
           },
         },
+        wasi_snapshot_preview1: {
+          fd_write: (fd: number, strPtr: number, strLen: number) => {
+            if (fd === 1 /* stdout */) {
+              const uint8 = new Uint8Array(memory.buffer, strPtr, strLen);
+              const str = new TextDecoder().decode(uint8);
+              runEditor.setValue(runEditor.getValue() + str);
+            } else {
+              console.log({ fd, strPtr, strLen });
+            }
+          },
+        },
       });
+      if (instance.exports["memory"] instanceof WebAssembly.Memory) {
+        memory = instance.exports["memory"];
+      }
+      const wasiMain = instance.exports["_main"];
+      if (typeof wasiMain === "function") {
+        wasiMain();
+      }
 
       runEditor.setValue(runEditor.getValue() + `<exit>\n`);
     } catch (e) {

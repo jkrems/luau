@@ -41,6 +41,71 @@ struct Local
     uint32_t allocpc = 0;
     wasm::Type type = wasm::Type::none;
     TypeId typeId = nullptr;
+    wasm::Name name;
+};
+
+class WasmRegister
+{
+public:
+    WasmRegister(wasm::Name name, wasm::Type type, TypeId typeId, bool allocated = true)
+        : name(name)
+        , type(type)
+        , typeId(typeId)
+        , allocated(allocated)
+    {
+    }
+
+    virtual ~WasmRegister() {}
+
+    virtual wasm::Expression* get() const = 0;
+    virtual wasm::Expression* set(wasm::Expression* value) const = 0;
+
+    WasmRegister* deallocate()
+    {
+        allocated = false;
+        return this;
+    }
+
+    WasmRegister* allocate()
+    {
+        allocated = true;
+        return this;
+    }
+
+    wasm::Name name;
+    wasm::Type type;
+    TypeId typeId;
+    bool allocated;
+};
+
+class WasmLocalRegister : public WasmRegister
+{
+public:
+    WasmLocalRegister(
+        wasm::Builder& builder, wasm::Name name, wasm::Type type, TypeId typeId, wasm::Index index, bool param = false, bool allocated = true)
+        : WasmRegister(name, type, typeId, allocated)
+        , builder(builder)
+        , index(index)
+        , param(param)
+    {
+    }
+    virtual ~WasmLocalRegister() {}
+
+    wasm::Expression* get() const override
+    {
+        return builder.makeLocalGet(index, type);
+    }
+
+    wasm::Expression* set(wasm::Expression* value) const override
+    {
+        return builder.makeLocalSet(index, value);
+    }
+
+    wasm::Index index;
+    bool param;
+
+protected:
+    wasm::Builder& builder;
 };
 
 struct TableFieldNameRef
@@ -48,11 +113,6 @@ struct TableFieldNameRef
     wasm::Index index = 0;
     TypeId typeId;
     wasm::Type type;
-};
-
-enum UtilityFunctionType
-{
-    PRINT,
 };
 
 struct UtilityFunction
@@ -89,6 +149,11 @@ public:
 
     void compile(const AstNameTable& names, AstStatBlock* root)
     {
+        wasm.features = wasm::FeatureSet::All;
+
+        wasm.addMemory(builder.makeMemory(mem, 1));
+        wasm.addExport(builder.makeExport(mem, mem, wasm::ExternalKind::Memory));
+
         uint8_t mainFlags = 42;
 
         // since access to some global objects may result in values that change over time, we block imports from non-readonly tables
@@ -123,7 +188,7 @@ public:
         uint32_t mainid = compileFunction(&main, mainFlags);
 
         const WasmFunction* mainf = functions.find(&main);
-        wasm.addStart(mainf->code->name);
+        wasm.addExport(builder.makeExport("_start", mainf->code->name, wasm::ExternalKind::Function));
     }
 
 private:
@@ -157,7 +222,7 @@ private:
     {
         RegScope(WasmCompiler* self)
             : self(self)
-            , oldTop(self->regTop)
+            , oldTop(self->registers.size())
         {
         }
 
@@ -165,15 +230,15 @@ private:
         // discarded
         RegScope(WasmCompiler* self, unsigned int top)
             : self(self)
-            , oldTop(self->regTop)
+            , oldTop(self->registers.size())
         {
-            LUAU_ASSERT(top <= self->regTop);
-            self->regTop = top;
+            LUAU_ASSERT(top <= self->registers.size());
+            self->registers.resize(top);
         }
 
         ~RegScope()
         {
-            self->regTop = oldTop;
+            self->registers.resize(oldTop);
         }
 
         WasmCompiler* self;
@@ -184,9 +249,10 @@ private:
     wasm::Builder builder;
     ModulePtr checkedModule;
     CompileOptions options;
+    wasm::Name mem = "memory";
 
     DenseHashMap<AstExprFunction*, WasmFunction> functions;
-    DenseHashMap<AstLocal*, Local> locals;
+    DenseHashMap<AstLocal*, WasmRegister*> locals;
     DenseHashMap<AstName, Global> globals;
     DenseHashMap<AstLocal*, Variable> variables;
     DenseHashMap<AstExpr*, Constant> constants;
@@ -204,14 +270,10 @@ private:
     const DenseHashMap<AstExprCall*, int>* builtinsFold = nullptr;
     bool builtinsFoldMathK = false;
 
-    // compileFunction state, gets reset for every function
-    unsigned int regTop = 0;
-    unsigned int stackSize = 0;
-
     std::vector<AstLocal*> localStack;
     std::vector<AstLocal*> upvals;
     std::vector<wasm::Block*> currentBlock;
-    std::vector<Local> registers;
+    std::vector<std::unique_ptr<WasmRegister>> registers;
 
     ScopePtr getScope(const Location& loc)
     {
@@ -351,53 +413,39 @@ private:
         return std::optional<TableFieldNameRef>();
     }
 
-    uint8_t allocReg(AstNode* node, unsigned int count)
+    WasmRegister* pushRegLocal(AstNode* node, TypeId typeId, wasm::Type type, wasm::Name name = "", bool param = false)
     {
-        unsigned int top = regTop;
-
-        regTop += count;
-        stackSize = std::max(stackSize, regTop);
-
-        return uint8_t(top);
+        wasm::Index index = registers.size();
+        std::unique_ptr reg = std::make_unique<WasmLocalRegister>(builder, name, type, typeId, index, param);
+        LUAU_ASSERT(reg->type.size() > 0);
+        return registers.emplace_back(std::move(reg)).get();
     }
 
-    uint8_t pushRegLocal(AstNode* node, TypeId typeId, wasm::Type type)
+    WasmRegister* pushLocal(AstLocal* local, TypeId typeId, wasm::Type type, wasm::Name name = "")
     {
-        uint8_t reg = allocReg(node, 1);
-
-        Local l;
-        l.reg = reg;
-        l.allocated = true;
-        l.type = type;
-        l.typeId = typeId;
-        registers.emplace_back(std::move(l));
-
+        WasmRegister* reg = pushRegLocal(nullptr, typeId, type, name, /* param= */ false);
+        localStack.push_back(local);
+        locals[local] = reg;
         return reg;
     }
 
-    void pushLocal(AstLocal* local, uint8_t reg, TypeId typeId, wasm::Type type)
+    WasmRegister* pushParamLocal(AstLocal* local, TypeId typeId, wasm::Type type, wasm::Name name = "")
     {
+        WasmRegister* reg = pushRegLocal(nullptr, typeId, type, name, /* param= */ true);
         localStack.push_back(local);
-
-        Local& l = locals[local];
-
-        LUAU_ASSERT(!l.allocated);
-
-        l.reg = reg;
-        l.allocated = true;
-        l.type = type;
-        l.typeId = typeId;
+        locals[local] = reg;
+        return reg;
     }
 
     void popLocals(size_t start)
     {
         for (size_t i = start; i < localStack.size(); ++i)
         {
-            Local* l = locals.find(localStack[i]);
+            WasmRegister** l = locals.find(localStack[i]);
             LUAU_ASSERT(l);
-            LUAU_ASSERT(l->allocated);
+            LUAU_ASSERT((*l)->allocated);
 
-            l->allocated = false;
+            (*l)->allocated = false;
         }
 
         localStack.resize(start);
@@ -406,7 +454,7 @@ private:
     uint32_t compileFunction(AstExprFunction* func, uint8_t protoflags)
     {
         LUAU_ASSERT(!functions.contains(func));
-        LUAU_ASSERT(regTop == 0 && stackSize == 0 && localStack.empty() && upvals.empty());
+        LUAU_ASSERT(registers.empty() && localStack.empty() && upvals.empty());
 
         RegScope rs(this);
 
@@ -425,7 +473,6 @@ private:
 
         uint8_t self = 0;
         uint8_t localsOffset = self + unsigned(func->args.size);
-        uint8_t args = allocReg(func, localsOffset);
 
         // Determine function signature.
         wasm::Tuple paramsTuple;
@@ -436,7 +483,7 @@ private:
             LUAU_ASSERT(maybeType);
             TypeId argTypeId = follow(*maybeType);
             wasm::Type argType = resolveTypeRef(argTypeId);
-            pushLocal(arg, args + paramsTuple.size(), argTypeId, argType);
+            pushParamLocal(arg, argTypeId, argType, arg->name.value);
             paramsTuple.push_back(argType);
         }
         wasm::Type params(paramsTuple);
@@ -473,42 +520,66 @@ private:
             compileStat(stat->body.data[i]);
         }
 
-        wasm::TypeList locals;
-        locals.resize(localStack.size() + registers.size() - localsOffset);
-        // Find locals that have been declared, minus the known params.
-        for (uint8_t li = args + localsOffset; li < localStack.size(); ++li)
+        wasm::TypeList localTypes;
+        wasm::Index expectedLocalTypesCount = registers.size() - params.size();
+        localTypes.resize(expectedLocalTypesCount);
+        for (auto& reg : registers)
         {
-            AstLocal* astLocal = localStack[li];
-            Local& l = this->locals[astLocal];
-            LUAU_ASSERT(l.allocated);
-            locals[l.reg - localsOffset] = l.type;
+            LUAU_ASSERT(reg->allocated);
+            if (WasmLocalRegister* lreg = dynamic_cast<WasmLocalRegister*>(reg.get()))
+            {
+                if (lreg->param)
+                {
+                    LUAU_ASSERT(lreg->index < params.size());
+                    continue;
+                }
+                LUAU_ASSERT(reg->type.size() > 0);
+                LUAU_ASSERT(lreg->index >= params.size());
+                wasm::Index relativeIndex = lreg->index - params.size();
+                LUAU_ASSERT(relativeIndex < expectedLocalTypesCount);
+                localTypes[relativeIndex] = reg->type;
+            }
         }
+
+        for (auto& localType : localTypes)
+        {
+            LUAU_ASSERT(localType.size() > 0);
+        }
+
+        wasm::Expression* body = finishBlock();
+
+        f.code = wasm.addFunction(builder.makeFunction(func->debugname.value, wasm::Signature(params, results), std::move(localTypes), body));
 
         for (auto& reg : registers)
         {
-            LUAU_ASSERT(reg.allocated);
-            locals[reg.reg - localsOffset] = reg.type;
+            if (WasmLocalRegister* lreg = dynamic_cast<WasmLocalRegister*>(reg.get()))
+            {
+                if (lreg->name.size() > 0)
+                {
+                    f.code->setLocalName(lreg->index, lreg->name);
+                }
+            }
         }
 
         popLocals(0);
         upvals.clear(); // note: instead of std::move above, we copy & clear to preserve capacity for future pushes
         registers.clear();
-        stackSize = 0;
 
-        wasm::Expression* body = finishBlock();
-
-        f.code = wasm.addFunction(builder.makeFunction(func->debugname.value, wasm::Signature(params, results), std::move(locals), body));
-
-        if (exportsReturn && exportsReturn->list.size == 1) {
-            if (AstExprTable *tab = (*exportsReturn->list.data)->as<AstExprTable>()) {
-                for (auto &item : tab->items) {
-                    if (item.kind != AstExprTable::Item::Kind::Record) {
+        if (exportsReturn && exportsReturn->list.size == 1)
+        {
+            if (AstExprTable* tab = (*exportsReturn->list.data)->as<AstExprTable>())
+            {
+                for (auto& item : tab->items)
+                {
+                    if (item.kind != AstExprTable::Item::Kind::Record)
+                    {
                         continue;
                     }
 
-                    AstExprConstantString *key = item.key->as<AstExprConstantString>();
-                    AstExprLocal *value = item.value->as<AstExprLocal>();
-                    if (key && value) {
+                    AstExprConstantString* key = item.key->as<AstExprConstantString>();
+                    AstExprLocal* value = item.value->as<AstExprLocal>();
+                    if (key && value)
+                    {
                         std::string exportName(key->value.begin(), key->value.end());
                         wasm.addExport(builder.makeExport(exportName.c_str(), value->local->name.value, wasm::ExternalKind::Function));
                     }
@@ -538,22 +609,17 @@ private:
             LUAU_ASSERT(scope);
 
             // Reverse assign
-            uint8_t regs = allocReg(loc, loc->vars.size);
-            uint8_t varIdx = 0;
             for (auto it = loc->vars.rbegin(); it != loc->vars.rend(); ++it)
             {
                 AstLocal* target = (*it);
                 TypeId targetTypeId = follow(*scope->lookup(target));
-                pushLocal(target, regs + varIdx, targetTypeId, resolveTypeRef(targetTypeId));
+                WasmRegister* l = pushLocal(target, targetTypeId, resolveTypeRef(targetTypeId));
 
                 // 1. Find local.
-                Local& l = locals[target];
-                LUAU_ASSERT(l.allocated);
+                LUAU_ASSERT(l->allocated);
 
                 // 2. Assign to local. We have to provide an expression.
-                appendToBlock(builder.makeLocalSet(l.reg, builder.makeNop()));
-
-                ++varIdx;
+                appendToBlock(l->set(builder.makeNop()));
             }
         }
         else if (auto* assign = stat->as<AstStatAssign>())
@@ -572,24 +638,23 @@ private:
                 if (auto* targetLocal = targetExpr->as<AstExprLocal>())
                 {
                     AstLocal* target = targetLocal->local;
-                    Local& l = locals[target];
-                    LUAU_ASSERT(l.allocated);
-                    appendToBlock(builder.makeLocalSet(l.reg, builder.makeNop()));
+                    WasmRegister* l = locals[target];
+                    LUAU_ASSERT(l->allocated);
+                    appendToBlock(l->set(builder.makeNop()));
                 }
                 else if (auto* propExpr = targetExpr->as<AstExprIndexName>())
                 {
-                    Local* tableRef = compileTableToLocal(propExpr);
+                    WasmRegister* tableRef = compileTableToLocal(propExpr);
                     LUAU_ASSERT(tableRef);
 
                     auto fieldRef = resolveTableFieldNameRef(tableRef->typeId, propExpr->index);
                     LUAU_ASSERT(fieldRef);
 
-                    uint8_t reg = pushRegLocal(propExpr, fieldRef->typeId, fieldRef->type);
+                    WasmRegister* reg = pushRegLocal(propExpr, fieldRef->typeId, fieldRef->type);
                     // Stack value in temporary local.
-                    appendToBlock(builder.makeLocalSet(reg, builder.makeNop()));
+                    appendToBlock(reg->set(builder.makeNop()));
 
-                    appendToBlock(builder.makeStructSet(
-                        fieldRef->index, builder.makeLocalGet(tableRef->reg, tableRef->type), builder.makeLocalGet(reg, fieldRef->type)));
+                    appendToBlock(builder.makeStructSet(fieldRef->index, tableRef->get(), reg->get()));
                 }
                 else
                 {
@@ -604,23 +669,23 @@ private:
             if (auto* targetLocal = compAssign->var->as<AstExprLocal>())
             {
                 AstLocal* target = targetLocal->local;
-                Local& l = locals[target];
-                LUAU_ASSERT(l.allocated);
+                WasmRegister* l = locals[target];
+                LUAU_ASSERT(l->allocated);
 
-                wasm::Expression* left = builder.makeLocalGet(l.reg, l.type);
+                wasm::Expression* left = l->get();
                 wasm::Expression* newValue = toWasmBinaryExpr(compAssign->op, left, right);
 
-                appendToBlock(builder.makeLocalSet(l.reg, newValue));
+                appendToBlock(l->set(newValue));
             }
             else if (auto* propExpr = compAssign->var->as<AstExprIndexName>())
             {
-                Local* tableRef = compileTableToLocal(propExpr);
+                WasmRegister* tableRef = compileTableToLocal(propExpr);
                 LUAU_ASSERT(tableRef);
 
                 auto fieldRef = resolveTableFieldNameRef(tableRef->typeId, propExpr->index);
                 LUAU_ASSERT(fieldRef);
 
-                wasm::Expression* getTable = builder.makeLocalGet(tableRef->reg, tableRef->type);
+                wasm::Expression* getTable = tableRef->get();
 
                 wasm::Expression* left = builder.makeStructGet(fieldRef->index, getTable, fieldRef->type);
                 wasm::Expression* newValue = toWasmBinaryExpr(compAssign->op, left, right);
@@ -679,15 +744,15 @@ private:
         }
     }
 
-    Local* compileTableToLocal(AstExprIndexName* indexName)
+    WasmRegister* compileTableToLocal(AstExprIndexName* indexName)
     {
         if (auto* refLocal = indexName->expr->as<AstExprLocal>())
         {
             AstLocal* target = refLocal->local;
-            Local& l = locals[target];
-            LUAU_ASSERT(l.allocated);
+            WasmRegister* l = locals[target];
+            LUAU_ASSERT(l->allocated);
 
-            return &l;
+            return l;
         }
         else
         {
@@ -698,7 +763,8 @@ private:
 
     wasm::Expression* compileBody(AstStat* body)
     {
-        if (!body) {
+        if (!body)
+        {
             return nullptr;
         }
 
@@ -754,13 +820,13 @@ private:
 
         case AstExprBinary::Op::Pow:
         {
-            uint8_t leftReg = this->pushRegLocal(nullptr, nullptr, wasm::Type::f64);
-            wasm::Expression* storeLeft = builder.makeLocalSet(leftReg, left);
-            uint8_t rightReg = this->pushRegLocal(nullptr, nullptr, wasm::Type::f64);
-            wasm::Expression* storeRight = builder.makeLocalSet(rightReg, right);
+            WasmRegister* leftReg = pushRegLocal(nullptr, nullptr, wasm::Type::f64);
+            wasm::Expression* storeLeft = leftReg->set(left);
+            WasmRegister* rightReg = pushRegLocal(nullptr, nullptr, wasm::Type::f64);
+            wasm::Expression* storeRight = rightReg->set(right);
 
-            left = builder.makeLocalGet(leftReg, wasm::Type::f64);
-            right = builder.makeLocalGet(rightReg, wasm::Type::f64);
+            left = leftReg->get();
+            right = rightReg->get();
 
             wasm::Expression* fallback = builder.makeUnreachable();
 
@@ -879,17 +945,17 @@ private:
             return utilityFunctions[name].name;
         }
 
-        if (strcmp("print", name.value) == 0)
+        if (strcmp("print_f64", name.value) == 0)
         {
             UtilityFunction& uf = utilityFunctions[name];
-            uf.name = wasm::Name("print");
+            uf.name = wasm::Name("print_f64");
             // TODO: Change params type to be `...any`.
             // TODO: Consider implementing this in terms of Wasi..?
             wasm::Type params = wasm::Type::f64;
             uf.results = wasm::Type::none;
             wasm::Function* f = wasm.addFunction(builder.makeFunction(uf.name, wasm::Signature{params, uf.results}, {}));
             f->module = "luau:util";
-            f->base = "print";
+            f->base = "print_number";
             return uf.name;
         }
 
@@ -905,12 +971,8 @@ private:
         else if (auto* loc = expr->as<AstExprLocal>())
         {
             AstLocal* target = loc->local;
-            // 1. Find local.
-            Local& l = locals[target];
-            // 2. Determine the local type.
-            wasm::Type lType = wasm::Type::f64;
-            // 3. Get the local.
-            return builder.makeLocalGet(l.reg, lType);
+            WasmRegister* l = locals[target];
+            return l->get();
         }
         else if (auto* call = expr->as<AstExprCall>())
         {
@@ -939,7 +1001,7 @@ private:
                 else
                 {
                     std::cout << "Handle potential global: " << call->func << " (" << funcAstGlobal->name.value << ")\n";
-                    return builder.makeConst(1.41);
+                    return builder.makeConst(1.42);
                 }
             }
             else
@@ -966,13 +1028,13 @@ private:
         }
         else if (auto* indexName = expr->as<AstExprIndexName>())
         {
-            Local* tableRef = compileTableToLocal(indexName);
+            WasmRegister* tableRef = compileTableToLocal(indexName);
             LUAU_ASSERT(tableRef);
 
             auto fieldRef = resolveTableFieldNameRef(tableRef->typeId, indexName->index);
             LUAU_ASSERT(fieldRef);
 
-            return builder.makeStructGet(fieldRef->index, builder.makeLocalGet(tableRef->reg, tableRef->type), fieldRef->type);
+            return builder.makeStructGet(fieldRef->index, tableRef->get(), fieldRef->type);
         }
         else if (auto* bin = expr->as<AstExprBinary>())
         {
@@ -1050,6 +1112,30 @@ std::unique_ptr<wasm::Module> compileToWasm(SourceModule* sourceModule, ModulePt
     return wasm;
 }
 
+static const std::string kDebugDefinitionLuaSrc = R"BUILTIN_SRC(
+declare function print_f64(n: number): ()
+)BUILTIN_SRC";
+
+static void registerDebugGlobals(Frontend& frontend, Luau::GlobalTypes& globals, bool typeCheckForAutocomplete = false)
+{
+    LoadDefinitionFileResult loadResult = frontend.loadDefinitionFile(
+        frontend.globals, globals.globalScope, kDebugDefinitionLuaSrc, "@luau", /* captureComments */ false, typeCheckForAutocomplete);
+    LUAU_ASSERT(loadResult.success);
+}
+
+static const std::string kWasiPreview1DefinitionLuaSrc = R"BUILTIN_SRC(
+declare wasi_snapshot_preview1: {
+    fd_write: (fd: number, iovs_ptr: number, iovs_len: number, written_ptr: number) -> number
+}
+)BUILTIN_SRC";
+
+static void registerWasiGlobals(Frontend& frontend, Luau::GlobalTypes& globals, bool typeCheckForAutocomplete = false)
+{
+    LoadDefinitionFileResult loadResult = frontend.loadDefinitionFile(
+        frontend.globals, globals.globalScope, kWasiPreview1DefinitionLuaSrc, "@luau", /* captureComments */ false, typeCheckForAutocomplete);
+    LUAU_ASSERT(loadResult.success);
+}
+
 std::string compileToWasm(Frontend& frontend, const std::string& moduleName, const WasmCompileOptions& wasmOptions, const CompileOptions& options,
     const ParseOptions& parseOptions)
 {
@@ -1058,6 +1144,8 @@ std::string compileToWasm(Frontend& frontend, const std::string& moduleName, con
     frontend.options.runLintChecks = true;
 
     registerBuiltinGlobals(frontend, frontend.globals);
+    registerDebugGlobals(frontend, frontend.globals);
+    registerWasiGlobals(frontend, frontend.globals);
     freeze(frontend.globals.globalTypes);
 
     CheckResult checks = frontend.check(moduleName);

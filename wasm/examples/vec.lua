@@ -12,4 +12,4 @@ local function vecLen(v: Vector2d)
 end
 
 local m: Vector2d = vec2d(3, 4);
-print(vecLen(m));
+print_f64(vecLen(m));

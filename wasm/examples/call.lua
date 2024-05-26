@@ -7,9 +7,9 @@ end
 
 local v = opt(true, 4);
 if v.present then
-  print(v.value);
+  print_f64(v.value);
 else
-  print(-1);
+  print_f64(-1);
 end
 
 return {opt = opt};
