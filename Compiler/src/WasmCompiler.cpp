@@ -44,6 +44,177 @@ struct Local
     wasm::Name name;
 };
 
+enum WasmIntrinsicType
+{
+    STRING_CONCAT,
+    MEMORY_ALLOC,
+    PRINT_STRING,
+    PRINT_F64,
+    NUMBER_TO_STRING,
+    WASI__wasi_snapshot_preview1__fd_write,
+    WASM_INTRINSIC_COUNT,
+};
+
+class WasmIntrinsics
+{
+public:
+    WasmIntrinsics(wasm::Module& wasm, wasm::Builder& builder)
+        : wasm(wasm)
+        , builder(builder)
+    {
+    }
+
+    wasm::Name get(WasmIntrinsicType type)
+    {
+        LUAU_ASSERT(type < WasmIntrinsicType::WASM_INTRINSIC_COUNT);
+
+        auto m = cache.find(type);
+        if (m != cache.end())
+        {
+            return m->second;
+        }
+
+        wasm::Function* f = create(type);
+        cache[type] = f->name;
+        return f->name;
+    }
+
+private:
+    wasm::Module& wasm;
+    wasm::Builder& builder;
+    std::map<WasmIntrinsicType, wasm::Name> cache;
+    wasm::Name memory = "memory";
+
+    wasm::Function* create(WasmIntrinsicType type)
+    {
+        switch (type)
+        {
+        case WasmIntrinsicType::STRING_CONCAT:
+        {
+            wasm::Type params = wasm::Type({wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32});
+            wasm::Type results = wasm::Type({wasm::Type::i32, wasm::Type::i32});
+            wasm::Expression* body = builder.makeBlock(
+                {// Calculate output string size: aLen + bLen.
+                    builder.makeLocalSet(5, builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(1, wasm::Type::i32),
+                                                builder.makeLocalGet(3, wasm::Type::i32))),
+                    // Reserve memory for the output string.
+                    builder.makeLocalSet(
+                        4, builder.makeCall(get(WasmIntrinsicType::MEMORY_ALLOC), {builder.makeLocalGet(5, wasm::Type::i32)}, wasm::Type::i32)),
+                    // Copy a -> out.
+                    builder.makeMemoryCopy(builder.makeLocalGet(4, wasm::Type::i32), builder.makeLocalGet(0, wasm::Type::i32),
+                        builder.makeLocalGet(1, wasm::Type::i32), memory, memory),
+                    // Copy b -> out + len(a).
+                    builder.makeMemoryCopy(builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(4, wasm::Type::i32),
+                                               builder.makeLocalGet(1, wasm::Type::i32)),
+                        builder.makeLocalGet(2, wasm::Type::i32), builder.makeLocalGet(3, wasm::Type::i32), memory, memory),
+                    // Return (outPtr, outLen).
+                    builder.makeReturn(builder.makeTupleMake(
+                        std::vector<wasm::Expression*>{builder.makeLocalGet(4, wasm::Type::i32), builder.makeLocalGet(5, wasm::Type::i32)}))},
+                results);
+            wasm::Function* fn = wasm.addFunction(
+                builder.makeFunction("__string_concat__", wasm::Signature{params, results}, {wasm::Type::i32, wasm::Type::i32}, body));
+            fn->setLocalName(0, "aPtr");
+            fn->setLocalName(1, "aLen");
+            fn->setLocalName(2, "bPtr");
+            fn->setLocalName(3, "bLen");
+            fn->setLocalName(4, "outPtr");
+            fn->setLocalName(5, "outLen");
+            return fn;
+        }
+
+        case WasmIntrinsicType::WASI__wasi_snapshot_preview1__fd_write:
+        {
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction(
+                "fd_write", wasm::Signature{{wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32}, {wasm::Type::i32}}, {}));
+            fn->module = "wasi_snapshot_preview1";
+            fn->base = "fd_write";
+
+            return fn;
+        }
+
+        case WasmIntrinsicType::PRINT_STRING:
+        {
+            wasm::Name alloc = get(WasmIntrinsicType::MEMORY_ALLOC);
+            wasm::Name fd_write = get(WasmIntrinsicType::WASI__wasi_snapshot_preview1__fd_write);
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("print_string", wasm::Signature{{wasm::Type::i32, wasm::Type::i32}, {}},
+                {wasm::Type::i32},
+                builder.makeBlock({
+                    // Reserve a iov struct + written size i32.
+                    builder.makeLocalSet(2, builder.makeCall(alloc,
+                                                std::vector<wasm::Expression*>{
+                                                    builder.makeConst(12),
+                                                },
+                                                wasm::Type::i32)),
+                    // Write str ptr.
+                    builder.makeStore(
+                        4, 0, 0, builder.makeLocalGet(2, wasm::Type::i32), builder.makeLocalGet(0, wasm::Type::i32), wasm::Type::i32, memory),
+                    // Write str len.
+                    builder.makeStore(
+                        4, 4, 0, builder.makeLocalGet(2, wasm::Type::i32), builder.makeLocalGet(1, wasm::Type::i32), wasm::Type::i32, memory),
+                    builder.makeDrop(builder.makeCall(fd_write,
+                        std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(2), builder.makeLocalGet(2, wasm::Type::i32),
+                            // One entry in iovs[]
+                            builder.makeConst(1),
+                            builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(2, wasm::Type::i32), builder.makeConst<uint32_t>(8))},
+                        wasm::Type::i32)),
+                })));
+            fn->setLocalName(0, "strPtr");
+            fn->setLocalName(1, "strLen");
+            fn->setLocalName(2, "iovsPtr");
+            return fn;
+        }
+
+        case WasmIntrinsicType::NUMBER_TO_STRING:
+        {
+            wasm::Function* fn = wasm.addFunction(
+                builder.makeFunction("__number_to_string__", wasm::Signature{{wasm::Type::f64}, {wasm::Type::i32, wasm::Type::i32}}, {},
+                    builder.makeBlock({builder.makeReturn(
+                        builder.makeTupleMake(std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(0), builder.makeConst<uint32_t>(0)}))})));
+            fn->setLocalName(0, "n");
+            return fn;
+        }
+
+        case WasmIntrinsicType::PRINT_F64:
+        {
+            wasm::Name print_string = get(WasmIntrinsicType::PRINT_STRING);
+            wasm::Name number_to_string = get(WasmIntrinsicType::NUMBER_TO_STRING);
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("print_f64", wasm::Signature{{wasm::Type::f64}, {}}, {},
+                builder.makeBlock({builder.makeCall(print_string,
+                    std::vector<wasm::Expression*>{builder.makeCall(number_to_string,
+                        std::vector<wasm::Expression*>{builder.makeLocalGet(0, wasm::Type::f64)}, wasm::Type({wasm::Type::i32, wasm::Type::i32}))},
+                    wasm::Type::none)})));
+            fn->setLocalName(0, "n");
+            return fn;
+        }
+
+        case WasmIntrinsicType::MEMORY_ALLOC:
+        {
+            wasm.addGlobal(builder.makeGlobal("heapBase", wasm::Type::i32, builder.makeConst(0), wasm::Builder::Mutability::Immutable));
+            wasm.addGlobal(
+                builder.makeGlobal("heap", wasm::Type::i32, builder.makeGlobalGet("heapBase", wasm::Type::i32), wasm::Builder::Mutability::Mutable));
+            wasm::Function* fn =
+                wasm.addFunction(builder.makeFunction("__memory_alloc__", wasm::Signature{{wasm::Type::i32}, {wasm::Type::i32}}, {wasm::Type::i32},
+                    builder.makeBlock(
+                        {// Store current heap pointer as the output.
+                            builder.makeLocalSet(1, builder.makeGlobalGet("heap", wasm::Type::i32)),
+                            // Increase pointer by len.
+                            builder.makeGlobalSet("heap", builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeGlobalGet("heap", wasm::Type::i32),
+                                                              builder.makeLocalGet(0, wasm::Type::i32))),
+                            // Return pointer.
+                            builder.makeReturn(builder.makeLocalGet(1, wasm::Type::i32))},
+                        wasm::Type::i32)));
+            fn->setLocalName(0, "len");
+            fn->setLocalName(1, "ptr");
+            return fn;
+        }
+
+        case WasmIntrinsicType::WASM_INTRINSIC_COUNT:
+            return wasm.addFunction(builder.makeFunction(
+                "__wasm_intrinsic_count__", wasm::Signature{}, {}, builder.makeConst<uint32_t>(WasmIntrinsicType::WASM_INTRINSIC_COUNT)));
+        }
+    }
+};
+
 class WasmRegister
 {
 public:
@@ -127,6 +298,7 @@ public:
     WasmCompiler(wasm::Module& wasm, ModulePtr checkedModule, const CompileOptions& options)
         : wasm(wasm)
         , builder(this->wasm)
+        , intrinsics(wasm, builder)
         , checkedModule(checkedModule)
         , options(options)
         , functions(nullptr)
@@ -189,6 +361,11 @@ public:
 
         const WasmFunction* mainf = functions.find(&main);
         wasm.addExport(builder.makeExport("_start", mainf->code->name, wasm::ExternalKind::Function));
+
+        if (wasm::Global* hb = wasm.getGlobalOrNull("heapBase"))
+        {
+            hb->init = builder.makeConst(heapBase);
+        }
     }
 
 private:
@@ -247,6 +424,7 @@ private:
 
     wasm::Module& wasm;
     wasm::Builder builder;
+    WasmIntrinsics intrinsics;
     ModulePtr checkedModule;
     CompileOptions options;
     wasm::Name mem = "memory";
@@ -274,6 +452,8 @@ private:
     std::vector<AstLocal*> upvals;
     std::vector<wasm::Block*> currentBlock;
     std::vector<std::unique_ptr<WasmRegister>> registers;
+
+    uint32_t heapBase = 0;
 
     ScopePtr getScope(const Location& loc)
     {
@@ -309,6 +489,20 @@ private:
         wasm::Block* expr = currentBlock.back();
         currentBlock.pop_back();
         return expr;
+    }
+
+    uint32_t addDataSegment(const char* data, size_t length, wasm::Name name = "")
+    {
+        uint32_t addr = heapBase;
+        if (name.size() == 0)
+        {
+            std::stringstream ss;
+            ss << "@" << addr;
+            name = ss.str();
+        }
+        wasm::DataSegment* s = wasm.addDataSegment(builder.makeDataSegment(name, mem, false, builder.makeConst(addr), data, length));
+        heapBase += length;
+        return addr;
     }
 
     wasm::Type resolveTypeRef(AstType* astType)
@@ -349,6 +543,10 @@ private:
 
             case PrimitiveType::Number:
                 return wasm::Type::f64;
+
+            case PrimitiveType::String:
+                // Strings are (ptr, len) tuples for now.
+                return wasm::Type({wasm::Type::i32, wasm::Type::i32});
 
             default:
                 printf("TODO: Handle PrimitiveType %u\n", pt->type);
@@ -843,9 +1041,11 @@ private:
                 {storeLeft, storeRight, builder.makeIf(isNoop, noop, builder.makeIf(isSqrt, sqrt, builder.makeIf(isPow2, pow2, fallback)))});
         }
 
-            // case AstExprBinary::Op::Concat:
-            //     op = wasm::BinaryOp::ConcatFloat64;
-            //     break;
+        case AstExprBinary::Op::Concat:
+        {
+            // TODO: Handle implicit to-string.
+            return builder.makeCall(intrinsics.get(WasmIntrinsicType::STRING_CONCAT), {left, right}, wasm::Type({wasm::Type::i32, wasm::Type::i32}));
+        }
 
         case AstExprBinary::Op::CompareNe:
             op = wasm::BinaryOp::NeFloat64;
@@ -947,16 +1147,21 @@ private:
 
         if (strcmp("print_f64", name.value) == 0)
         {
+            // TODO: Implement f64 formatting, roughly at least.
+            // return intrinsics.get(WasmIntrinsicType::PRINT_F64);
+
             UtilityFunction& uf = utilityFunctions[name];
             uf.name = wasm::Name("print_f64");
-            // TODO: Change params type to be `...any`.
-            // TODO: Consider implementing this in terms of Wasi..?
             wasm::Type params = wasm::Type::f64;
             uf.results = wasm::Type::none;
             wasm::Function* f = wasm.addFunction(builder.makeFunction(uf.name, wasm::Signature{params, uf.results}, {}));
             f->module = "luau:util";
             f->base = "print_number";
             return uf.name;
+        }
+        else if (strcmp("print_string", name.value) == 0)
+        {
+            return intrinsics.get(WasmIntrinsicType::PRINT_STRING);
         }
 
         return std::optional<wasm::Name>();
@@ -1025,6 +1230,15 @@ private:
         else if (auto* b = expr->as<AstExprConstantBool>())
         {
             return builder.makeConst<int32_t>(b->value);
+        }
+        else if (auto* s = expr->as<AstExprConstantString>())
+        {
+            size_t length = s->value.size;
+            uint32_t addr = addDataSegment(s->value.data, length);
+            return builder.makeTupleMake(std::vector<wasm::Expression*>{
+                builder.makeConst<uint32_t>(addr),
+                builder.makeConst<uint32_t>(length),
+            });
         }
         else if (auto* indexName = expr->as<AstExprIndexName>())
         {
@@ -1114,6 +1328,7 @@ std::unique_ptr<wasm::Module> compileToWasm(SourceModule* sourceModule, ModulePt
 
 static const std::string kDebugDefinitionLuaSrc = R"BUILTIN_SRC(
 declare function print_f64(n: number): ()
+declare function print_string(s: string): ()
 )BUILTIN_SRC";
 
 static void registerDebugGlobals(Frontend& frontend, Luau::GlobalTypes& globals, bool typeCheckForAutocomplete = false)
