@@ -49,8 +49,10 @@ enum WasmIntrinsicType
     STRING_CONCAT,
     MEMORY_ALLOC,
     PRINT_STRING,
-    PRINT_F64,
     NUMBER_TO_STRING,
+    PRINT_F64,
+    BOOL_TO_STRING,
+    PRINT_BOOL,
     WASI__wasi_snapshot_preview1__fd_write,
     WASM_INTRINSIC_COUNT,
 };
@@ -58,7 +60,9 @@ enum WasmIntrinsicType
 class WasmIntrinsics
 {
 public:
-    static const int32_t RESERVED_HEAP = 132;
+    static const int32_t RESERVED_HEAP = 148;
+    // "true" + "false" = 9 bytes.
+    static const int32_t TRUE_FALSE_INDEX = RESERVED_HEAP - strlen("truefalse");
 
     WasmIntrinsics(wasm::Module& wasm, wasm::Builder& builder)
         : wasm(wasm)
@@ -193,6 +197,37 @@ private:
                         std::vector<wasm::Expression*>{builder.makeLocalGet(0, wasm::Type::f64)}, wasm::Type({wasm::Type::i32, wasm::Type::i32}))},
                     wasm::Type::none)})));
             fn->setLocalName(0, "n");
+            return fn;
+        }
+
+        case WasmIntrinsicType::BOOL_TO_STRING:
+        {
+            wasm.addDataSegment(
+                builder.makeDataSegment("__bool_to_string_static__", memory, false, builder.makeConst(TRUE_FALSE_INDEX), "truefalse", 9));
+            // The real answer here would be to introduce a data segment for the "true"/"false" strings.
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("__bool_to_string__",
+                wasm::Signature{{wasm::Type::i32}, {wasm::Type::i32, wasm::Type::i32}}, {wasm::Type::i32, wasm::Type::i32},
+                builder.makeBlock({builder.makeIf(builder.makeUnary(wasm::UnaryOp::EqZInt32, builder.makeLocalGet(0, wasm::Type::i32)),
+                    builder.makeTupleMake(
+                        std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(TRUE_FALSE_INDEX + 4), builder.makeConst<uint32_t>(5)}),
+                    builder.makeTupleMake(
+                        std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(TRUE_FALSE_INDEX), builder.makeConst<uint32_t>(4)}))})));
+            fn->setLocalName(0, "b");
+            fn->setLocalName(1, "strPtr");
+            fn->setLocalName(2, "strLen");
+            return fn;
+        }
+
+        case WasmIntrinsicType::PRINT_BOOL:
+        {
+            wasm::Name bool_to_string = get(WasmIntrinsicType::BOOL_TO_STRING);
+            wasm::Name print_string = get(WasmIntrinsicType::PRINT_STRING);
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("print_bool", wasm::Signature{{wasm::Type::i32}, {}}, {},
+                builder.makeBlock({builder.makeCall(print_string,
+                    std::vector<wasm::Expression*>{builder.makeCall(bool_to_string,
+                        std::vector<wasm::Expression*>{builder.makeLocalGet(0, wasm::Type::i32)}, wasm::Type({wasm::Type::i32, wasm::Type::i32}))},
+                    wasm::Type::none)})));
+            fn->setLocalName(0, "b");
             return fn;
         }
 
@@ -1172,6 +1207,10 @@ private:
         {
             return intrinsics.get(WasmIntrinsicType::PRINT_STRING);
         }
+        else if (strcmp("print_bool", name.value) == 0)
+        {
+            return intrinsics.get(WasmIntrinsicType::PRINT_BOOL);
+        }
 
         return std::optional<wasm::Name>();
     }
@@ -1336,6 +1375,7 @@ std::unique_ptr<wasm::Module> compileToWasm(SourceModule* sourceModule, ModulePt
 }
 
 static const std::string kDebugDefinitionLuaSrc = R"BUILTIN_SRC(
+declare function print_bool(b: boolean): ()
 declare function print_f64(n: number): ()
 declare function print_string(s: string): ()
 )BUILTIN_SRC";

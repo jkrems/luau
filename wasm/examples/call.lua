@@ -6,6 +6,7 @@ local function opt(present: boolean, value: number)
 end
 
 local v = opt(true, 4);
+print_bool(v.present);
 if v.present then
   print_f64(v.value);
 else
