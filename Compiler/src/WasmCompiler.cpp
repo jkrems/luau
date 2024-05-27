@@ -58,6 +58,8 @@ enum WasmIntrinsicType
 class WasmIntrinsics
 {
 public:
+    static const int32_t RESERVED_HEAP = 132;
+
     WasmIntrinsics(wasm::Module& wasm, wasm::Builder& builder)
         : wasm(wasm)
         , builder(builder)
@@ -134,33 +136,40 @@ private:
 
         case WasmIntrinsicType::PRINT_STRING:
         {
-            wasm::Name alloc = get(WasmIntrinsicType::MEMORY_ALLOC);
             wasm::Name fd_write = get(WasmIntrinsicType::WASI__wasi_snapshot_preview1__fd_write);
-            wasm::Function* fn = wasm.addFunction(builder.makeFunction("print_string", wasm::Signature{{wasm::Type::i32, wasm::Type::i32}, {}},
-                {wasm::Type::i32},
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("print_string", wasm::Signature{{wasm::Type::i32, wasm::Type::i32}, {}}, {},
                 builder.makeBlock({
-                    // Reserve a iov struct + written size i32.
-                    builder.makeLocalSet(2, builder.makeCall(alloc,
-                                                std::vector<wasm::Expression*>{
-                                                    builder.makeConst(12),
-                                                },
-                                                wasm::Type::i32)),
                     // Write str ptr.
-                    builder.makeStore(
-                        4, 0, 0, builder.makeLocalGet(2, wasm::Type::i32), builder.makeLocalGet(0, wasm::Type::i32), wasm::Type::i32, memory),
+                    builder.makeStore(4, 0, 0, builder.makeConst(0), builder.makeLocalGet(0, wasm::Type::i32), wasm::Type::i32, memory),
                     // Write str len.
-                    builder.makeStore(
-                        4, 4, 0, builder.makeLocalGet(2, wasm::Type::i32), builder.makeLocalGet(1, wasm::Type::i32), wasm::Type::i32, memory),
+                    builder.makeStore(4, 4, 0, builder.makeConst(0), builder.makeLocalGet(1, wasm::Type::i32), wasm::Type::i32, memory),
+                    // Write newline
+                    builder.makeStore(4, 0, 0, builder.makeConst(8), builder.makeConst(20), wasm::Type::i32, memory),
+                    builder.makeStore(4, 4, 0, builder.makeConst(8), builder.makeConst(1), wasm::Type::i32, memory),
+                    builder.makeStore(1, 0, 0, builder.makeConst(20), builder.makeConst('\n'), wasm::Type::i32, memory),
                     builder.makeDrop(builder.makeCall(fd_write,
-                        std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(2), builder.makeLocalGet(2, wasm::Type::i32),
-                            // One entry in iovs[]
+                        std::vector<wasm::Expression*>{// Write to fd=2 (stdout).
+                            builder.makeConst<uint32_t>(2),
+                            // iovs location in memory
+                            builder.makeConst(0),
+                            // #entries in iovs[]
                             builder.makeConst(1),
-                            builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(2, wasm::Type::i32), builder.makeConst<uint32_t>(8))},
+                            // Write written byte count after the iovs entries.
+                            builder.makeConst<uint32_t>(16)},
+                        wasm::Type::i32)),
+                    builder.makeDrop(builder.makeCall(fd_write,
+                        std::vector<wasm::Expression*>{// Write to fd=2 (stdout).
+                            builder.makeConst<uint32_t>(2),
+                            // iovs location in memory
+                            builder.makeConst(8),
+                            // #entries in iovs[]
+                            builder.makeConst(1),
+                            // Write written byte count after the iovs entries.
+                            builder.makeConst<uint32_t>(16)},
                         wasm::Type::i32)),
                 })));
             fn->setLocalName(0, "strPtr");
             fn->setLocalName(1, "strLen");
-            fn->setLocalName(2, "iovsPtr");
             return fn;
         }
 
@@ -189,7 +198,7 @@ private:
 
         case WasmIntrinsicType::MEMORY_ALLOC:
         {
-            wasm.addGlobal(builder.makeGlobal("heapBase", wasm::Type::i32, builder.makeConst(0), wasm::Builder::Mutability::Immutable));
+            wasm.addGlobal(builder.makeGlobal("heapBase", wasm::Type::i32, builder.makeConst(RESERVED_HEAP), wasm::Builder::Mutability::Immutable));
             wasm.addGlobal(
                 builder.makeGlobal("heap", wasm::Type::i32, builder.makeGlobalGet("heapBase", wasm::Type::i32), wasm::Builder::Mutability::Mutable));
             wasm::Function* fn =
@@ -453,7 +462,7 @@ private:
     std::vector<wasm::Block*> currentBlock;
     std::vector<std::unique_ptr<WasmRegister>> registers;
 
-    uint32_t heapBase = 0;
+    uint32_t heapBase = WasmIntrinsics::RESERVED_HEAP;
 
     ScopePtr getScope(const Location& loc)
     {
