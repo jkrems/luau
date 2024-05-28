@@ -63,6 +63,8 @@ public:
     static const int32_t RESERVED_HEAP = 148;
     // "true" + "false" = 9 bytes.
     static const int32_t TRUE_FALSE_INDEX = RESERVED_HEAP - strlen("truefalse");
+    // "-inf" + "nan" = 7 bytes.
+    static const int32_t INF_NAN_INDEX = TRUE_FALSE_INDEX - strlen("-infnan");
 
     WasmIntrinsics(wasm::Module& wasm, wasm::Builder& builder)
         : wasm(wasm)
@@ -179,11 +181,356 @@ private:
 
         case WasmIntrinsicType::NUMBER_TO_STRING:
         {
-            wasm::Function* fn = wasm.addFunction(
-                builder.makeFunction("__number_to_string__", wasm::Signature{{wasm::Type::f64}, {wasm::Type::i32, wasm::Type::i32}}, {},
-                    builder.makeBlock({builder.makeReturn(
-                        builder.makeTupleMake(std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(0), builder.makeConst<uint32_t>(0)}))})));
-            fn->setLocalName(0, "n");
+            // This implements the algorithm described in:
+            // https://blog.benoitblanchon.fr/lightweight-float-to-string/
+            wasm.addDataSegment(
+                builder.makeDataSegment("__number_to_string_static__", memory, false, builder.makeConst(INF_NAN_INDEX), "-infnan", 7));
+
+            wasm::Name alloc = get(WasmIntrinsicType::MEMORY_ALLOC);
+            // 3 * 7 digits (int32) + some additional chars.
+            uint32_t maxStrLen = 28;
+
+            wasm::Index value = 0;
+            wasm::Index integralPart = 1;
+            wasm::Index decimalPart = 2;
+            wasm::Index exponent = 3;
+            wasm::Index remainder = 7;
+
+            wasm::Index outPtr = 4;
+            wasm::Index outLen = 5;
+            wasm::Index writePtr = 6;
+
+            wasm::Index intVal = 8;
+            wasm::Index intLen = 9;
+
+            wasm::Type strType({wasm::Type::i32, wasm::Type::i32});
+
+            wasm::Expression* handleInf = builder.makeReturn(builder.makeTupleMake(
+                std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(INF_NAN_INDEX + 1), builder.makeConst<uint32_t>(3)}));
+            wasm::Expression* handleNegInf = builder.makeReturn(
+                builder.makeTupleMake(std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(INF_NAN_INDEX), builder.makeConst<uint32_t>(4)}));
+            wasm::Expression* checkInf = builder.makeIf(builder.makeBinary(wasm::BinaryOp::EqFloat64, builder.makeLocalGet(value, wasm::Type::f64),
+                                                            builder.makeConst<double>(std::numeric_limits<double>::infinity())),
+                handleInf,
+                builder.makeIf(builder.makeBinary(wasm::BinaryOp::EqFloat64, builder.makeLocalGet(value, wasm::Type::f64),
+                                   builder.makeConst<double>(-std::numeric_limits<double>::infinity())),
+                    handleNegInf, nullptr, wasm::Type::none),
+                wasm::Type::none);
+
+            wasm::Expression* handleNan = builder.makeReturn(builder.makeTupleMake(
+                std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(INF_NAN_INDEX + 4), builder.makeConst<uint32_t>(3)}));
+            wasm::Expression* checkNan = builder.makeIf(builder.makeBinary(wasm::BinaryOp::EqFloat64, builder.makeLocalGet(value, wasm::Type::f64),
+                                                            builder.makeLocalGet(value, wasm::Type::f64)),
+                checkInf, handleNan, wasm::Type::none);
+
+            wasm::Expression* positiveExpThreshold = builder.makeConst<double>(1e7);
+            wasm::Block* positiveExpThresholdTransforms = builder.makeBlock();
+            for (int factor = 256; factor > 0; factor = factor / 2)
+            {
+                wasm::Expression* expDiv = builder.makeConst<double>(ldexp(1.0, factor));
+                positiveExpThresholdTransforms->list.push_back(builder.makeIf(
+                    builder.makeBinary(wasm::BinaryOp::GeFloat64, builder.makeLocalGet(value, wasm::Type::f64), expDiv),
+                    builder.makeBlock({// value /= 1e<factor>
+                        builder.makeLocalSet(
+                            value, builder.makeBinary(wasm::BinaryOp::DivFloat64, builder.makeLocalGet(value, wasm::Type::f64), expDiv)),
+
+                        // exponent += <factor>
+                        builder.makeLocalSet(exponent, builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(exponent, wasm::Type::i32),
+                                                           builder.makeConst<uint32_t>(factor)))})));
+            }
+
+            wasm::Expression* negativeExpThreshold = builder.makeConst<double>(1e-5);
+            wasm::Block* negativeExpThresholdTransforms = builder.makeBlock();
+            for (int factor = 256; factor > 0; factor = factor / 2)
+            {
+                wasm::Expression* expTest = builder.makeConst<double>(ldexp(1.0, -(factor - 1)));
+                wasm::Expression* expMul = builder.makeConst<double>(ldexp(1.0, factor));
+                negativeExpThresholdTransforms->list.push_back(builder.makeIf(
+                    builder.makeBinary(wasm::BinaryOp::LtFloat64, builder.makeLocalGet(value, wasm::Type::f64), expTest),
+                    builder.makeBlock({// value /= 1e<factor>
+                        builder.makeLocalSet(
+                            value, builder.makeBinary(wasm::BinaryOp::MulFloat64, builder.makeLocalGet(value, wasm::Type::f64), expMul)),
+
+                        // exponent += <factor>
+                        builder.makeLocalSet(exponent, builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(exponent, wasm::Type::i32),
+                                                           builder.makeConst<uint32_t>(factor)))})));
+            }
+
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("__number_to_string__", wasm::Signature{{wasm::Type::f64}, strType},
+                {wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::f64,
+                    wasm::Type::i32, wasm::Type::i32},
+                builder.makeBlock(
+                    {checkNan,
+                        // Initialize outPtr and writePtr to the beginning of a freshly allocated bit of memory.
+                        builder.makeLocalSet(
+                            outPtr, builder.makeCall(alloc, std::vector<wasm::Expression*>{builder.makeConst<uint32_t>(maxStrLen)}, wasm::Type::i32)),
+                        builder.makeLocalSet(writePtr, builder.makeLocalGet(outPtr, wasm::Type::i32)),
+
+                        // if (num < 0) append('-'); num  = -num;
+                        builder.makeIf(
+                            builder.makeBinary(wasm::BinaryOp::LtFloat64, builder.makeLocalGet(value, wasm::Type::f64), builder.makeConst<double>(0)),
+                            builder.makeBlock({builder.makeStore(1, 0, 0, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                   builder.makeConst<int32_t>('-'), wasm::Type::i32, memory),
+                                builder.makeLocalSet(writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                   builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst(1))),
+                                builder.makeLocalSet(value, builder.makeBinary(wasm::BinaryOp::MulFloat64,
+                                                                builder.makeLocalGet(value, wasm::Type::f64), builder.makeConst<double>(-1)))})),
+
+                        /* <normalizeFloat> */
+                        // if (value >= positiveExpThreshold) {...}
+                        builder.makeIf(
+                            builder.makeBinary(wasm::BinaryOp::GeFloat64, builder.makeLocalGet(value, wasm::Type::f64), positiveExpThreshold),
+                            positiveExpThresholdTransforms),
+                        // if (value > 0 && value <= negativeExpThreshold) {...}
+                        builder.makeIf(
+                            builder.makeBinary(wasm::BinaryOp::AndInt32,
+                                builder.makeBinary(
+                                    wasm::BinaryOp::GtFloat64, builder.makeLocalGet(value, wasm::Type::f64), builder.makeConst<double>(0.0)),
+                                builder.makeBinary(wasm::BinaryOp::LeFloat64, builder.makeLocalGet(value, wasm::Type::f64), negativeExpThreshold)),
+                            negativeExpThresholdTransforms),
+                        /* </normalizeFloat> */
+
+                        /* <splitFloat> */
+                        // integralPart = (uint32_t)value;
+                        builder.makeLocalSet(
+                            integralPart, builder.makeUnary(wasm::UnaryOp::TruncUFloat64ToInt32, builder.makeLocalGet(value, wasm::Type::f64))),
+
+                        // double remainder = value - integralPart;
+                        builder.makeLocalSet(remainder,
+                            builder.makeBinary(wasm::BinaryOp::SubFloat64, builder.makeLocalGet(value, wasm::Type::f64),
+                                builder.makeUnary(wasm::UnaryOp::ConvertUInt32ToFloat64, builder.makeLocalGet(integralPart, wasm::Type::i32)))),
+
+                        // remainder *= 1e9;
+                        builder.makeLocalSet(remainder, builder.makeBinary(wasm::BinaryOp::MulFloat64,
+                                                            builder.makeLocalGet(remainder, wasm::Type::f64), builder.makeConst<double>(1e9))),
+
+                        // decimalPart = (uint32_t)remainder;
+                        builder.makeLocalSet(
+                            decimalPart, builder.makeUnary(wasm::UnaryOp::TruncUFloat64ToInt32, builder.makeLocalGet(remainder, wasm::Type::f64))),
+
+                        // // rounding
+                        // remainder -= decimalPart;
+                        builder.makeLocalSet(remainder,
+                            builder.makeBinary(wasm::BinaryOp::SubFloat64, builder.makeLocalGet(remainder, wasm::Type::f64),
+                                builder.makeUnary(wasm::UnaryOp::ConvertUInt32ToFloat64, builder.makeLocalGet(decimalPart, wasm::Type::i32)))),
+                        // if (remainder >= 0.5) { ... }
+                        builder.makeIf(builder.makeBinary(wasm::BinaryOp::GeFloat64, builder.makeLocalGet(remainder, wasm::Type::f64),
+                                           builder.makeConst<double>(0.5)),
+                            builder.makeBlock(
+                                {builder.makeLocalSet(decimalPart, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                       builder.makeLocalGet(decimalPart, wasm::Type::i32), builder.makeConst(1))),
+                                    builder.makeIf(builder.makeBinary(wasm::BinaryOp::GeUInt32, builder.makeLocalGet(decimalPart, wasm::Type::i32),
+                                                       builder.makeConst<uint32_t>(1000000000)),
+                                        builder.makeBlock({builder.makeLocalSet(decimalPart, builder.makeConst(0)),
+                                            builder.makeLocalSet(
+                                                integralPart, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                  builder.makeLocalGet(integralPart, wasm::Type::i32), builder.makeConst(1))),
+                                            builder.makeIf(builder.makeBinary(wasm::BinaryOp::AndInt32,
+                                                               builder.makeBinary(wasm::BinaryOp::NeInt32,
+                                                                   builder.makeLocalGet(exponent, wasm::Type::i32), builder.makeConst(0)),
+                                                               builder.makeBinary(wasm::BinaryOp::GeUInt32,
+                                                                   builder.makeLocalGet(integralPart, wasm::Type::i32), builder.makeConst(10))),
+                                                builder.makeBlock({builder.makeLocalSet(exponent,
+                                                                       builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                           builder.makeLocalGet(exponent, wasm::Type::i32), builder.makeConst(1))),
+                                                    builder.makeLocalSet(integralPart, builder.makeConst(1))}))}))})),
+                        /* </splitFloat> */
+
+                        // writeInteger(integralPart);
+                        builder.makeLocalSet(intVal, builder.makeLocalGet(integralPart, wasm::Type::i32)),
+                        builder.makeLocalSet(intLen, builder.makeConst(0)),
+                        builder.makeLoop("digit_count",
+                            builder.makeBlock({
+                                builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                 builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                 builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                builder.makeBreak("digit_count", nullptr,
+                                    builder.makeBinary(wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                            })),
+                        builder.makeLocalSet(writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                           builder.makeLocalGet(intLen, wasm::Type::i32))),
+                        builder.makeLocalSet(intVal, builder.makeLocalGet(integralPart, wasm::Type::i32)),
+                        builder.makeLocalSet(intLen, builder.makeConst(1)),
+                        builder.makeLoop("digit_write",
+                            builder.makeBlock({
+                                builder.makeStore(1, 0, 0,
+                                    builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                        builder.makeLocalGet(intLen, wasm::Type::i32)),
+                                    builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeConst<uint32_t>('0'),
+                                        builder.makeBinary(
+                                            wasm::BinaryOp::RemUInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                    wasm::Type::i32, memory),
+                                builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                 builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                 builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                builder.makeBreak("digit_write", nullptr,
+                                    builder.makeBinary(wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                            })),
+
+                        // if (decimalPart != 0) writeDecimals(decimalPart);
+                        builder.makeIf(
+                            builder.makeBinary(wasm::BinaryOp::NeInt32, builder.makeLocalGet(decimalPart, wasm::Type::i32), builder.makeConst(0)),
+                            builder.makeBlock({
+                                builder.makeStore(1, 0, 0, builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst<uint32_t>('.'),
+                                    wasm::Type::i32, memory),
+                                builder.makeLocalSet(intLen, builder.makeConst(9)),
+                                builder.makeLoop("digit_count",
+                                    builder.makeIf(builder.makeBinary(wasm::BinaryOp::AndInt32,
+                                                       builder.makeBinary(wasm::BinaryOp::EqInt32,
+                                                           builder.makeBinary(wasm::BinaryOp::RemUInt32,
+                                                               builder.makeLocalGet(decimalPart, wasm::Type::i32), builder.makeConst(10)),
+                                                           builder.makeConst(0)),
+                                                       builder.makeBinary(wasm::BinaryOp::GtUInt32, builder.makeLocalGet(intLen, wasm::Type::i32),
+                                                           builder.makeConst(0))),
+                                        builder.makeBlock({
+                                            builder.makeLocalSet(
+                                                decimalPart, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                 builder.makeLocalGet(decimalPart, wasm::Type::i32), builder.makeConst(10))),
+                                            builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::SubInt32,
+                                                                             builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                            builder.makeBreak("digit_count"),
+                                        }))),
+                                builder.makeLocalSet(
+                                    writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                  builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                      builder.makeLocalGet(intLen, wasm::Type::i32)),
+                                                  builder.makeConst(1))),
+                                builder.makeLocalSet(integralPart, builder.makeConst(0)),
+                                builder.makeLoop("digit_write",
+                                    builder.makeIf(builder.makeBinary(wasm::BinaryOp::LtUInt32, builder.makeLocalGet(integralPart, wasm::Type::i32),
+                                                       builder.makeLocalGet(intLen, wasm::Type::i32)),
+                                        builder.makeBlock({
+                                            builder.makeLocalSet(
+                                                integralPart, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                  builder.makeLocalGet(integralPart, wasm::Type::i32), builder.makeConst(1))),
+                                            builder.makeStore(1, 0, 0,
+                                                builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                    builder.makeLocalGet(integralPart, wasm::Type::i32)),
+                                                builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeConst<uint32_t>('0'),
+                                                    builder.makeBinary(wasm::BinaryOp::RemUInt32, builder.makeLocalGet(decimalPart, wasm::Type::i32),
+                                                        builder.makeConst(10))),
+                                                wasm::Type::i32, memory),
+                                            builder.makeLocalSet(
+                                                decimalPart, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                 builder.makeLocalGet(decimalPart, wasm::Type::i32), builder.makeConst(10))),
+                                            builder.makeBreak("digit_write"),
+                                        }))),
+                            })),
+
+                        // if (exponent < 0) { ... }
+                        builder.makeIf(
+                            builder.makeBinary(wasm::BinaryOp::LtSInt32, builder.makeLocalGet(exponent, wasm::Type::i32), builder.makeConst(0)),
+                            builder.makeBlock({
+                                builder.makeStore(2, 0, 0, builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst(/* -e (LE) */ 0x2d65),
+                                    wasm::Type::i32, memory),
+                                builder.makeLocalSet(writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                   builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst(2))),
+                                builder.makeLocalSet(exponent, builder.makeBinary(wasm::BinaryOp::MulInt32,
+                                                                   builder.makeLocalGet(exponent, wasm::Type::i32), builder.makeConst(-1))),
+
+                                builder.makeLocalSet(intVal, builder.makeLocalGet(exponent, wasm::Type::i32)),
+                                builder.makeLocalSet(intLen, builder.makeConst(0)),
+                                builder.makeLoop("digit_count",
+                                    builder.makeBlock({
+                                        builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                         builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                        builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                         builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                        builder.makeBreak("digit_count", nullptr,
+                                            builder.makeBinary(
+                                                wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                                    })),
+                                builder.makeLocalSet(
+                                    writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                  builder.makeLocalGet(intLen, wasm::Type::i32))),
+                                builder.makeLocalSet(intVal, builder.makeLocalGet(exponent, wasm::Type::i32)),
+                                builder.makeLocalSet(intLen, builder.makeConst(1)),
+                                builder.makeLoop("digit_write",
+                                    builder.makeBlock({
+                                        builder.makeStore(1, 0, 0,
+                                            builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                builder.makeLocalGet(intLen, wasm::Type::i32)),
+                                            builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeConst<uint32_t>('0'),
+                                                builder.makeBinary(
+                                                    wasm::BinaryOp::RemUInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                            wasm::Type::i32, memory),
+                                        builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                         builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                        builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                         builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                        builder.makeBreak("digit_write", nullptr,
+                                            builder.makeBinary(
+                                                wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                                    })),
+                            }),
+
+                            // if (exponent > 0) { ... }
+                            builder.makeIf(
+                                builder.makeBinary(wasm::BinaryOp::GtSInt32, builder.makeLocalGet(exponent, wasm::Type::i32), builder.makeConst(0)),
+                                builder.makeBlock({
+                                    builder.makeStore(
+                                        1, 0, 0, builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst('e'), wasm::Type::i32, memory),
+                                    builder.makeLocalSet(writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                       builder.makeLocalGet(writePtr, wasm::Type::i32), builder.makeConst(1))),
+
+                                    builder.makeLocalSet(intVal, builder.makeLocalGet(exponent, wasm::Type::i32)),
+                                    builder.makeLocalSet(intLen, builder.makeConst(0)),
+                                    builder.makeLoop("digit_count",
+                                        builder.makeBlock({
+                                            builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                             builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                            builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                             builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                            builder.makeBreak("digit_count", nullptr,
+                                                builder.makeBinary(
+                                                    wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                                        })),
+                                    builder.makeLocalSet(
+                                        writePtr, builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                      builder.makeLocalGet(intLen, wasm::Type::i32))),
+                                    builder.makeLocalSet(intVal, builder.makeLocalGet(exponent, wasm::Type::i32)),
+                                    builder.makeLocalSet(intLen, builder.makeConst(1)),
+                                    builder.makeLoop("digit_write",
+                                        builder.makeBlock({
+                                            builder.makeStore(1, 0, 0,
+                                                builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                    builder.makeLocalGet(intLen, wasm::Type::i32)),
+                                                builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeConst<uint32_t>('0'),
+                                                    builder.makeBinary(wasm::BinaryOp::RemUInt32, builder.makeLocalGet(intVal, wasm::Type::i32),
+                                                        builder.makeConst(10))),
+                                                wasm::Type::i32, memory),
+                                            builder.makeLocalSet(intLen, builder.makeBinary(wasm::BinaryOp::AddInt32,
+                                                                             builder.makeLocalGet(intLen, wasm::Type::i32), builder.makeConst(1))),
+                                            builder.makeLocalSet(intVal, builder.makeBinary(wasm::BinaryOp::DivUInt32,
+                                                                             builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(10))),
+                                            builder.makeBreak("digit_write", nullptr,
+                                                builder.makeBinary(
+                                                    wasm::BinaryOp::NeInt32, builder.makeLocalGet(intVal, wasm::Type::i32), builder.makeConst(0))),
+                                        })),
+                                }))),
+
+                        // outLen = writePtr - outPtr
+                        builder.makeLocalSet(outLen, builder.makeBinary(wasm::BinaryOp::SubInt32, builder.makeLocalGet(writePtr, wasm::Type::i32),
+                                                         builder.makeLocalGet(outPtr, wasm::Type::i32))),
+                        // return [outPtr, outLen];
+                        builder.makeReturn(builder.makeTupleMake(std::vector<wasm::Expression*>{
+                            builder.makeLocalGet(outPtr, wasm::Type::i32),
+                            builder.makeLocalGet(outLen, wasm::Type::i32),
+                        }))},
+                    strType)));
+
+            fn->setLocalName(value, "num");
+            fn->setLocalName(integralPart, "integralPart");
+            fn->setLocalName(decimalPart, "decimalPart");
+            fn->setLocalName(exponent, "exponent");
+            fn->setLocalName(outPtr, "outPtr");
+            fn->setLocalName(outLen, "outLen");
+            fn->setLocalName(writePtr, "writePtr");
+            fn->setLocalName(remainder, "remainder");
+            fn->setLocalName(intLen, "intLen");
+            fn->setLocalName(intVal, "intVal");
             return fn;
         }
 
@@ -1191,17 +1538,16 @@ private:
 
         if (strcmp("print_f64", name.value) == 0)
         {
-            // TODO: Implement f64 formatting, roughly at least.
-            // return intrinsics.get(WasmIntrinsicType::PRINT_F64);
+            return intrinsics.get(WasmIntrinsicType::PRINT_F64);
 
-            UtilityFunction& uf = utilityFunctions[name];
-            uf.name = wasm::Name("print_f64");
-            wasm::Type params = wasm::Type::f64;
-            uf.results = wasm::Type::none;
-            wasm::Function* f = wasm.addFunction(builder.makeFunction(uf.name, wasm::Signature{params, uf.results}, {}));
-            f->module = "luau:util";
-            f->base = "print_number";
-            return uf.name;
+            // UtilityFunction& uf = utilityFunctions[name];
+            // uf.name = wasm::Name("print_f64");
+            // wasm::Type params = wasm::Type::f64;
+            // uf.results = wasm::Type::none;
+            // wasm::Function* f = wasm.addFunction(builder.makeFunction(uf.name, wasm::Signature{params, uf.results}, {}));
+            // f->module = "luau:util";
+            // f->base = "print_number";
+            // return uf.name;
         }
         else if (strcmp("print_string", name.value) == 0)
         {
@@ -1451,6 +1797,11 @@ std::string compileToWasm(Frontend& frontend, const std::string& moduleName, con
     {
         std::string error = format(":%d: %s", e.getLocation().begin.line + 1, e.what());
         return "(; error: " + error + ";)";
+    }
+    catch (wasm::ParseException& e)
+    {
+        e.dump(std::cerr);
+        throw e;
     }
 }
 
