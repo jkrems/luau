@@ -9,11 +9,14 @@ import EXAMPLE_CALL from "../examples/call.lua?raw";
 import EXAMPLE_OPS from "../examples/ops.lua?raw";
 // @ts-ignore
 import EXAMPLE_VEC from "../examples/vec.lua?raw";
+// @ts-ignore
+import EXAMPLE_STR from "../examples/str.lua?raw";
 
 const EXAMPLES = new Map<string, string>([
   ["call.lua", EXAMPLE_CALL],
   ["ops.lua", EXAMPLE_OPS],
   ["vec.lua", EXAMPLE_VEC],
+  ["str.lua", EXAMPLE_STR],
 ]);
 
 type LuauWebModule = Awaited<
@@ -105,13 +108,19 @@ function main({ luauToWasm }: LuauWebModule) {
           },
         },
         wasi_snapshot_preview1: {
-          fd_write: (fd: number, strPtr: number, strLen: number) => {
-            if (fd === 1 /* stdout */) {
-              const uint8 = new Uint8Array(memory.buffer, strPtr, strLen);
-              const str = new TextDecoder().decode(uint8);
-              runEditor.setValue(runEditor.getValue() + str);
+          fd_write: (fd: number, iovsPtr: number, iovsLen: number) => {
+            if (fd === 1 /* stdout */ || fd === 2 /* stderr */) {
+              const iovs = new Uint32Array(memory.buffer, iovsPtr, iovsLen * 2);
+              for (let i = 0; i < iovsLen; ++i) {
+                const iovPtr = iovs[i * 2 + 0];
+                const iovLen = iovs[i * 2 + 1];
+                const str = new TextDecoder().decode(
+                  new Uint8Array(memory.buffer, iovPtr, iovLen)
+                );
+                runEditor.setValue(runEditor.getValue() + str);
+              }
             } else {
-              console.log({ fd, strPtr, strLen });
+              console.log({ fd, iovsPtr, iovsLen });
             }
           },
         },
@@ -119,7 +128,7 @@ function main({ luauToWasm }: LuauWebModule) {
       if (instance.exports["memory"] instanceof WebAssembly.Memory) {
         memory = instance.exports["memory"];
       }
-      const wasiMain = instance.exports["_main"];
+      const wasiMain = instance.exports["_start"];
       if (typeof wasiMain === "function") {
         wasiMain();
       }

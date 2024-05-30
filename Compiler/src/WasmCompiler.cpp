@@ -154,8 +154,8 @@ private:
                     builder.makeStore(4, 4, 0, builder.makeConst(8), builder.makeConst(1), wasm::Type::i32, memory),
                     builder.makeStore(1, 0, 0, builder.makeConst(20), builder.makeConst('\n'), wasm::Type::i32, memory),
                     builder.makeDrop(builder.makeCall(fd_write,
-                        std::vector<wasm::Expression*>{// Write to fd=2 (stdout).
-                            builder.makeConst<uint32_t>(2),
+                        std::vector<wasm::Expression*>{// Write to fd=1 (stdout).
+                            builder.makeConst<uint32_t>(1),
                             // iovs location in memory
                             builder.makeConst(0),
                             // #entries in iovs[]
@@ -164,8 +164,8 @@ private:
                             builder.makeConst<uint32_t>(16)},
                         wasm::Type::i32)),
                     builder.makeDrop(builder.makeCall(fd_write,
-                        std::vector<wasm::Expression*>{// Write to fd=2 (stdout).
-                            builder.makeConst<uint32_t>(2),
+                        std::vector<wasm::Expression*>{// Write to fd=1 (stdout).
+                            builder.makeConst<uint32_t>(1),
                             // iovs location in memory
                             builder.makeConst(8),
                             // #entries in iovs[]
