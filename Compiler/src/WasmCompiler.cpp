@@ -53,6 +53,12 @@ enum WasmIntrinsicType
     PRINT_F64,
     BOOL_TO_STRING,
     PRINT_BOOL,
+
+    BUFFER_CREATE,
+    BUFFER_LEN,
+    BUFFER_TOSTRING,
+    BUFFER_WRITEU8,
+
     WASI__wasi_snapshot_preview1__fd_write,
     WASM_INTRINSIC_COUNT,
 };
@@ -72,7 +78,17 @@ public:
     {
     }
 
-    wasm::Name get(WasmIntrinsicType type)
+    wasm::Function* getFunctionOrNull(const AstName& name)
+    {
+        auto m = types.find(name.value);
+        if (m != types.end())
+        {
+            return getFunction(m->second);
+        }
+        return nullptr;
+    }
+
+    wasm::Function* getFunction(WasmIntrinsicType type)
     {
         LUAU_ASSERT(type < WasmIntrinsicType::WASM_INTRINSIC_COUNT);
 
@@ -83,20 +99,105 @@ public:
         }
 
         wasm::Function* f = create(type);
-        cache[type] = f->name;
-        return f->name;
+        cache[type] = f;
+        return f;
+    }
+
+    wasm::Name get(WasmIntrinsicType type)
+    {
+        return getFunction(type)->name;
     }
 
 private:
     wasm::Module& wasm;
     wasm::Builder& builder;
-    std::map<WasmIntrinsicType, wasm::Name> cache;
+    std::map<WasmIntrinsicType, wasm::Function*> cache;
+    std::unordered_map<std::string, WasmIntrinsicType> types = {
+        {"print_f64", WasmIntrinsicType::PRINT_F64},
+        {"print_string", WasmIntrinsicType::PRINT_STRING},
+        {"print_bool", WasmIntrinsicType::PRINT_BOOL},
+
+        {"buffer.create", WasmIntrinsicType::BUFFER_CREATE},
+        {"buffer.len", WasmIntrinsicType::BUFFER_LEN},
+        {"buffer.tostring", WasmIntrinsicType::BUFFER_TOSTRING},
+        {"buffer.writeu8", WasmIntrinsicType::BUFFER_WRITEU8},
+    };
     wasm::Name memory = "memory";
 
     wasm::Function* create(WasmIntrinsicType type)
     {
         switch (type)
         {
+        case WasmIntrinsicType::BUFFER_CREATE:
+        {
+            wasm::Type params = wasm::Type::f64;
+            wasm::Type results = wasm::Type({wasm::Type::i32, wasm::Type::i32});
+
+            wasm::Expression* body = builder.makeBlock({
+                builder.makeLocalSet(1, builder.makeUnary(wasm::UnaryOp::TruncUFloat64ToInt32, builder.makeLocalGet(0, wasm::Type::f64))),
+                builder.makeReturn(builder.makeTupleMake(std::vector<wasm::Expression*>{
+                    builder.makeCall(get(WasmIntrinsicType::MEMORY_ALLOC), {builder.makeLocalGet(1, wasm::Type::i32)}, wasm::Type::i32),
+                    builder.makeLocalGet(1, wasm::Type::i32)})),
+            });
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("buffer.create", wasm::Signature{params, results}, {wasm::Type::i32}, body));
+            fn->setLocalName(0, "len");
+            return fn;
+        }
+
+        case WasmIntrinsicType::BUFFER_LEN:
+        {
+            wasm::Type params = wasm::Type({wasm::Type::i32, wasm::Type::i32});
+            wasm::Type results = wasm::Type::f64;
+
+            wasm::Expression* body = builder.makeUnary(wasm::UnaryOp::ConvertUInt32ToFloat64, builder.makeLocalGet(1, wasm::Type::i32));
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("buffer.len", wasm::Signature{params, results}, {}, body));
+            fn->setLocalName(0, "ptr");
+            fn->setLocalName(1, "len");
+            return fn;
+        }
+
+        case WasmIntrinsicType::BUFFER_TOSTRING:
+        {
+            wasm::Type params = wasm::Type({wasm::Type::i32, wasm::Type::i32});
+            wasm::Type results = wasm::Type({wasm::Type::i32, wasm::Type::i32});
+
+            wasm::Expression* body = builder.makeTupleMake(std::vector<wasm::Expression*>{
+                builder.makeLocalGet(0, wasm::Type::i32),
+                builder.makeLocalGet(1, wasm::Type::i32),
+            });
+            wasm::Function* fn = wasm.addFunction(builder.makeFunction("buffer.tostring", wasm::Signature{params, results}, {}, body));
+            fn->setLocalName(0, "ptr");
+            fn->setLocalName(1, "len");
+            return fn;
+        }
+
+        case WasmIntrinsicType::BUFFER_WRITEU8:
+        {
+            wasm::Type params = wasm::Type({wasm::Type::i32, wasm::Type::i32, wasm::Type::f64, wasm::Type::f64});
+            wasm::Type results = wasm::Type::none;
+
+            wasm::Expression* body = builder.makeBlock({
+                // 1. Convert offset to i32.
+                builder.makeLocalSet(4, builder.makeUnary(wasm::UnaryOp::TruncUFloat64ToInt32, builder.makeLocalGet(2, wasm::Type::f64))),
+                // 2. Convert value to i32.
+                builder.makeLocalSet(5, builder.makeUnary(wasm::UnaryOp::TruncUFloat64ToInt32, builder.makeLocalGet(3, wasm::Type::f64))),
+                // 3. Write!
+                builder.makeStore(1, 0, 0,
+                    builder.makeBinary(wasm::BinaryOp::AddInt32, builder.makeLocalGet(0, wasm::Type::i32), builder.makeLocalGet(4, wasm::Type::i32)),
+                    builder.makeLocalGet(5, wasm::Type::i32), wasm::Type::i32, memory),
+            });
+            wasm::Function* fn =
+                wasm.addFunction(builder.makeFunction("buffer.writeu8", wasm::Signature{params, results}, {wasm::Type::i32, wasm::Type::i32}, body));
+            fn->setLocalName(0, "ptr");
+            fn->setLocalName(1, "len");
+            fn->setLocalName(2, "offset");
+            fn->setLocalName(3, "value");
+            fn->setLocalName(4, "offset_i32");
+            fn->setLocalName(5, "value_i32");
+
+            return fn;
+        }
+
         case WasmIntrinsicType::STRING_CONCAT:
         {
             wasm::Type params = wasm::Type({wasm::Type::i32, wasm::Type::i32, wasm::Type::i32, wasm::Type::i32});
@@ -915,7 +1016,19 @@ private:
         results.reserve(typeList.types.size);
         for (auto& res : typeList.types)
         {
-            results.push_back(resolveTypeRef(res));
+            wasm::Type resType = resolveTypeRef(res);
+            if (resType.isTuple())
+            {
+                // Flatten return type.
+                for (auto elType : resType)
+                {
+                    results.push_back(elType);
+                }
+            }
+            else
+            {
+                results.push_back(resType);
+            }
         }
         return wasm::Type(results);
     }
@@ -935,8 +1048,9 @@ private:
             case PrimitiveType::Number:
                 return wasm::Type::f64;
 
+            case PrimitiveType::Buffer:
             case PrimitiveType::String:
-                // Strings are (ptr, len) tuples for now.
+                // Strings and Buffers are (ptr, len) tuples for now.
                 return wasm::Type({wasm::Type::i32, wasm::Type::i32});
 
             default:
@@ -960,7 +1074,19 @@ private:
         results.reserve(v.size());
         for (auto& res : v)
         {
-            results.push_back(resolveTypeRef(res));
+            wasm::Type resType = resolveTypeRef(res);
+            if (resType.isTuple())
+            {
+                // Flatten return type.
+                for (auto elType : resType)
+                {
+                    results.push_back(elType);
+                }
+            }
+            else
+            {
+                results.push_back(resType);
+            }
         }
 
         return wasm::Type(results);
@@ -1529,36 +1655,14 @@ private:
             return node->as<AstExprFunction>();
     }
 
-    std::optional<wasm::Name> getUtilityFunction(const AstName& name)
+    std::optional<wasm::Function*> getIntrinsicFunction(const AstName& name)
     {
-        if (utilityFunctions.contains(name))
+        wasm::Function* fn = intrinsics.getFunctionOrNull(name);
+        if (fn == nullptr)
         {
-            return utilityFunctions[name].name;
+            return std::optional<wasm::Function*>();
         }
-
-        if (strcmp("print_f64", name.value) == 0)
-        {
-            return intrinsics.get(WasmIntrinsicType::PRINT_F64);
-
-            // UtilityFunction& uf = utilityFunctions[name];
-            // uf.name = wasm::Name("print_f64");
-            // wasm::Type params = wasm::Type::f64;
-            // uf.results = wasm::Type::none;
-            // wasm::Function* f = wasm.addFunction(builder.makeFunction(uf.name, wasm::Signature{params, uf.results}, {}));
-            // f->module = "luau:util";
-            // f->base = "print_number";
-            // return uf.name;
-        }
-        else if (strcmp("print_string", name.value) == 0)
-        {
-            return intrinsics.get(WasmIntrinsicType::PRINT_STRING);
-        }
-        else if (strcmp("print_bool", name.value) == 0)
-        {
-            return intrinsics.get(WasmIntrinsicType::PRINT_BOOL);
-        }
-
-        return std::optional<wasm::Name>();
+        return fn;
     }
 
     wasm::Expression* compileExpr(AstExpr* expr)
@@ -1584,28 +1688,42 @@ private:
                 callee = f.code->name;
                 returnType = f.code->getResults();
             }
-            else if (int builtinId = builtins[call])
-            {
-                std::cout << "Handle builtin: " << call->func << " (" << builtinId << ")\n";
-                // printf("Could not find callee for call.\n");
-                return builder.makeConst(1.41);
-            }
             else if (AstExprGlobal* funcAstGlobal = call->func->as<AstExprGlobal>())
             {
-                if (auto maybeCallee = getUtilityFunction(funcAstGlobal->name))
+                if (auto maybeCallee = getIntrinsicFunction(funcAstGlobal->name))
                 {
-                    callee = *maybeCallee;
-                    returnType = wasm::Type::none;
+                    callee = maybeCallee.value()->name;
+                    returnType = maybeCallee.value()->type.getSignature().results;
                 }
                 else
                 {
-                    std::cout << "Handle potential global: " << call->func << " (" << funcAstGlobal->name.value << ")\n";
+                    std::cerr << "Handle potential global: " << call->func << " (" << funcAstGlobal->name.value << ")\n";
                     return builder.makeConst(1.42);
                 }
             }
-            else
+            else if (AstExprIndexName* funcIndexExpr = call->func->as<AstExprIndexName>())
             {
-                std::cout << "Unknown function: " << call->func << "(" << call->func->classIndex << ")\n";
+                if (AstExprGlobal* nsExpr = funcIndexExpr->expr->as<AstExprGlobal>())
+                {
+                    std::string fullName = std::string(nsExpr->name.value) + "." + funcIndexExpr->index.value;
+                    // index (value = "create")
+                    // expr AstExprGlobal = "buffer"
+                    if (auto maybeCallee = getIntrinsicFunction(Luau::AstName(fullName.c_str())))
+                    {
+                        callee = maybeCallee.value()->name;
+                        returnType = maybeCallee.value()->type.getSignature().results;
+                    }
+                    else
+                    {
+                        std::cerr << "Handle potential namespaced global: " << call->func << " (" << fullName << ")\n";
+                        return builder.makeConst(1.44);
+                    }
+                }
+            }
+
+            if (!callee)
+            {
+                std::cerr << "Unknown function: " << call->func << "(" << call->func->classIndex << ")\n";
                 return builder.makeConst(1.41);
             }
 

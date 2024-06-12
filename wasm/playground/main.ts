@@ -11,12 +11,15 @@ import EXAMPLE_OPS from "../examples/ops.lua?raw";
 import EXAMPLE_VEC from "../examples/vec.lua?raw";
 // @ts-ignore
 import EXAMPLE_STR from "../examples/str.lua?raw";
+// @ts-ignore
+import EXAMPLE_BUFFER from "../examples/buffer.lua?raw";
 
 const EXAMPLES = new Map<string, string>([
   ["call.lua", EXAMPLE_CALL],
   ["ops.lua", EXAMPLE_OPS],
   ["vec.lua", EXAMPLE_VEC],
   ["str.lua", EXAMPLE_STR],
+  ["buffer.lua", EXAMPLE_BUFFER],
 ]);
 
 type LuauWebModule = Awaited<
